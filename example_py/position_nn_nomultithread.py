@@ -66,8 +66,7 @@ def get_commands(commands_original = np.array([0., 0., 0.])):
         threshold = 0.05  # Define the threshold value
         commands = np.array([x if abs(x) >= threshold else 0 for x in scaled_axes])
     else:
-        exit() 
-        # commands = commands_original
+        exit()
 
     return commands
 

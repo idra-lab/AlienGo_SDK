@@ -43,9 +43,16 @@ TARGET_IP = "192.168.123.10"
 LOW_CMD_LENGTH = 610
 LOW_STATE_LENGTH = 771
 
-def get_commands(commands_original = np.array([0., 0., 0.])): 
+def get_commands(): 
     """
-    Compute the robot commands from the joystick inputs.
+    Retrieves joystick commands from a connected joystick using pygame.
+
+    This function checks if there is exactly one joystick connected. If so, it processes
+    joystick events, retrieves axis values, scales them, and applies a threshold to filter
+    out small values. The resulting commands are returned as a numpy array.
+
+    Raises:
+        SystemExit: If no joystick or more than one joystick is connected.
     """
 
     if pygame.joystick.get_count() == 1:
@@ -70,14 +77,10 @@ def get_commands(commands_original = np.array([0., 0., 0.])):
 
         return commands
     else:
-        # Run the program only when eternal joystick is connected
         exit()
-        # return commands_original
     
 def get_safety_button(): 
-    """
-    Compute the robot commands from the joystick inputs.
-    """
+    """Function to check if the safety button on the controller is pressed. Y buttoon for corrent joystick"""
 
     if pygame.joystick.get_count() == 1:
         for event in pygame.event.get():
@@ -100,6 +103,9 @@ stop_threads = False  # Flag to stop threads gracefully
 def compute_observation(state, scaling_factors):
     """
     Compute the observation vector from the robot's state.
+    Legs are swapped to match the order of the neural network input.
+    SDK order = [FR, FL, RR, RL]
+    nn order = [FL, FR, RL, RR]
     """
     commands = get_commands() # The stopping condition here is not evaluated
 
@@ -134,7 +140,10 @@ def compute_observation(state, scaling_factors):
 
 def compute_actions(state, scaling_factors):
     """
-    Infer actions using the neural network from observations.
+    Inference ont he nn to retrive actions from observations.
+    Legs are swapped to match the order of the neural network input.
+    SDK order = [FR, FL, RR, RL]
+    nn order = [FL, FR, RL, RR]
     """
     global latest_actions, previous_actions, stop_threads
     while not stop_threads:
@@ -161,7 +170,7 @@ def compute_actions(state, scaling_factors):
 
 def jointLinearInterpolation(initPos, targetPos, rate):
     """
-    Performs a linear interpolation between initial and target positions.
+    Performs a linear interpolation between initial and target joint positions.
     """
     rate = np.fmin(np.fmax(rate, 0.0), 1.0)
     p = initPos*(1-rate) + targetPos*rate
@@ -169,7 +178,7 @@ def jointLinearInterpolation(initPos, targetPos, rate):
 
 def check_safety_stops(state):
     """
-    Check if the inclination (pitch or roll) of the robot base exceeds the threshold (pi/4).
+    Check if the inclination of the robot base exceeds the threshold (pi/8) and checks the safety button as well.
     """
     imu = state.imu
     body_quat = imu.quaternion  # Quaternion from qpos
@@ -202,7 +211,7 @@ if __name__ == '__main__':
     VelStopF  = 16000.0
     HIGHLEVEL = 0x00
     LOWLEVEL  = 0xff
-    sin_mid_q = 4*[0.0, 0.7, -1.5]
+    sin_mid_q = 4*[0.0, 0.7, -1.5] # Creates a 12-elements list with the default joint angles for the standup
     dt = 0.002
 
     qInit = [0, 0, 0,
@@ -218,16 +227,13 @@ if __name__ == '__main__':
     rate_count = 0
 
     # PD tuning parameters
-    """ Kp = 0.*[100, 100, 100]
-    Kd = 0.*[3, 3, 3] """
-
     Kp = [100, 100, 100]
     Kd = [3, 3, 3]
 
     actions = torch.zeros(12, dtype=torch.float32)
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
-    decimation = 1
+    decimation = 4
 
     # Initialize the UDP connection
     udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
@@ -240,7 +246,7 @@ if __name__ == '__main__':
 
     motiontime = 0
 
-    disable_torques = False  # Flag to disable torques if inclination exceeds threshold
+    disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
 
     # Start the inference thread
     threading.Thread(target=compute_actions, args=(state, scaling_factors), daemon=True).start()
@@ -314,16 +320,12 @@ if __name__ == '__main__':
         else:
             print(f"\033[32m{temp:.5f}\033[0m") """
            
-        # Safety checks
+        """ Safety checks"""
         safe.PowerProtect(cmd, state, 7)
         safe.PositionLimit(cmd)
 
-        #print(qDes)
         if motiontime > 5*(1/dt):
             safe.PositionProtect(cmd, state, 0.087)
-
-        """ if (motiontime >= 5*(1/dt)):
-            print([state.motorState[i].tauEst for i in range(12)]) """
 
         udp.SetSend(cmd)
         udp.Send()
@@ -333,5 +335,5 @@ if __name__ == '__main__':
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
         
-        """ elapsed_time = time.time() - step_start  # Time taken for the loop iteration
-        print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)") """
+        # elapsed_time = time.time() - step_start  # Time taken for the loop iteration
+        # print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)")

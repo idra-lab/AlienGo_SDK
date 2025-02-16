@@ -12,33 +12,34 @@ def quat_rotate_inverse(q, v):
     c = q_vec * torch.bmm(q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)).squeeze(-1) * 2.0
     return a - b + c
 
-# Function to scale axis values - Joystick 1
 def scale_axis(index, value):
-    if index == 0:  # Axis 1 (Left Stick Y) -- Flip the sign
-        return -value * 0.5  # Flip the sign and map to [-0.5, 0.5]
-    elif index == 1:  # Axis 0 (Left Stick X)
-        value *= -1
-        if value > 0:
-            return value * 1.5  # Positive direction: [0, 1]
-        else:
-            return value * 0.9  # Negative direction: [0, -0.5]
-    elif index == 2:  # Axis 3 (Right Trigger)
-        return value * 0.78 #/ 2  # Symmetric between [-0.5, 0.5]
-    else:
-        return value  # Default case, no scaling for other axes
+    """
+    Scales the input value based on the specified axis index.
 
-# Function to scale axis values - Joystick 2
-def scale_axis2(index, value):
-    if index == 0:  # Axis 1 (Left Stick Y) -- Flip the sign
-        return -value  # Flip the sign and map to [-0.5, 0.5]
-    elif index == 1:  # Axis 0 (Left Stick X)
-        value *= -1
+    Parameters:
+    index (int): The index of the axis to scale. 
+                 0 - Axis 1 (Left Stick Y)
+                 1 - Axis 0 (Left Stick X)
+                 2 - Axis 3 (Trigger)
+    value (float): The input value to be scaled.
+
+    Returns:
+    float: The scaled value based on the axis index.
+           - For index 0: The value is flipped in sign and scaled to the range [-0.5, 0.5].
+           - For index 1: The value is flipped in sign and scaled to the range [0, 1.5] for positive values and [0, -0.9] for negative values.
+           - For index 2: The value is scaled symmetrically to the range [-0.78, 0.78].
+           - For other indices: The value is returned without scaling.
+    """
+    if index == 0:  
+        return -value * 0.5 
+    elif index == 1: 
+        value *= -1 
         if value > 0:
-            return value * 2.0  # Positive direction: [0, 1]
+            return value * 1.5  
         else:
-            return value * 1.0  # Negative direction: [0, -0.5]
-    elif index == 2:  # Axis 3 (Right Trigger)
-        return value  # Symmetric between [-0.5, 0.5]
+            return value * 0.9  
+    elif index == 2: 
+        return value * 0.78 
     else:
         return value  # Default case, no scaling for other axes
 
@@ -49,13 +50,6 @@ def swap_legs(array):
     The swap logic is fixed:
     - Swap front legs (indices 3:6) with (0:3)
     - Swap rear legs (indices 9:12) with (6:9)
-    
-    Parameters:
-    - array: np.array
-        The input array to modify.
-    
-    Returns:
-    - np.array: The modified array with swapped segments.
     """
     array_copy = array.copy()  # Make a copy to avoid modifying the original array
     
@@ -73,15 +67,8 @@ def swap_legs(array):
 def clip_torques_in_groups(torques):
     """
     Clip the elements of the `torques` array in groups of 3 with different ranges for each element.
-    - The first and second elements in the group are clipped to [-35.0, 35.0]
-    - The third element in the group is clipped to [-45.0, 45.0]
-    
-    Parameters:
-    - torques: np.array
-        The array of torques to modify.
-        
-    Returns:
-    - np.array: The modified array with clipped values.
+    - The first and second elements in the group are clipped to [-35.0, 35.0]Nm
+    - The third element in the group is clipped to [-45.0, 45.0]Nm
     """
     torques_copy = torques.copy()  # Make a copy to avoid modifying the original array
 
