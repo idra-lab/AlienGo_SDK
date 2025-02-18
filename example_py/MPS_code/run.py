@@ -69,7 +69,7 @@ if test_code:
 
         force_mag = 95
         force_applied = np.array([0.6584730894598917,-0.5965196811390472,0.458887197981067]) * force_mag
-        iter_application = 0
+        iter_application = 22
         data_muj_70, x_warmstart, u_warmstart, ctrl_al, is_rec, prev_stage_ant, data_mps, qpos_dt, qvel_dt, qacc_dt, torques_dt, forces = aligatorMPShorizon.testForcesInit(backup_nn, model_muj, data_muj_init, model_pin, data_pin, collision, visual)
         data_pos, data_vel, data_torque, data_fall, data_knee, backup_used, data_feet, robot_stopped, final_q, last_iteration, max_pos, min_pos, max_vel, min_vel, data_mpsB, save_data_mps_force = aligatorMPShorizon.testForces(iter_application, force_applied, force_mag, 0, backup_nn, model_muj, data_muj_70, model_pin, data_pin, collision, visual, x_warmstart, u_warmstart, ctrl_al, is_rec, prev_stage_ant, qpos_dt.copy(), qvel_dt.copy(), qacc_dt.copy(), torques_dt.copy(), forces.copy(), True, data_muj_init)
 
@@ -126,7 +126,7 @@ else:
 
                         save_data_mps = data_mps.copy()
 
-                        data_pos, data_vel, data_torque, data_fall, data_knee, backup_used, data_feet, robot_stopped, final_q, last_iteration, max_pos, min_pos, max_vel, min_vel, data_mpsB, save_data_mps_force = aligatorMPShorizon.testForces(i, force_applied, k, test_num, backup_nn, model_muj, data_muj_70, model_pin, data_pin, collision, visual, x_warmstart, u_warmstart, ctrl_al, is_rec, prev_stage_ant, qpos_dt.copy(), qvel_dt.copy(), qacc_dt.copy(), torques_dt.copy(), False)
+                        data_pos, data_vel, data_torque, data_fall, data_knee, backup_used, data_feet, robot_stopped, final_q, last_iteration, max_pos, min_pos, max_vel, min_vel, data_mpsB, save_data_mps_force = aligatorMPShorizon.testForces(i, force_applied, k, test_num, backup_nn, model_muj, data_muj_70, model_pin, data_pin, collision, visual, x_warmstart, u_warmstart, ctrl_al, is_rec, prev_stage_ant, qpos_dt.copy(), qvel_dt.copy(), qacc_dt.copy(), torques_dt.copy(), False, data_muj_init)
                         save_data_mps += data_mpsB
 
                         file_data_mps_complete = []
