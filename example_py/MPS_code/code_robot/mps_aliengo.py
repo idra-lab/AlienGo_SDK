@@ -10,8 +10,8 @@ sys.path.append('../lib/python/amd64')
 import robot_interface as sdk
 
 # Neural network and configuration imports
-from config_loader.config_loader import load_config, load_actor_network
-from utils import scale_axis, quat_rotate_inverse, swap_legs, clip_torques_in_groups
+from config_loader.config_loader import load_config, load_actor_network, load_mpc_data
+from utils import scale_axis, quat_rotate_inverse, swap_legs, clip_torques_in_groups, order_state, order_backup
 import pygame
 
 import threading
@@ -34,6 +34,13 @@ config = load_config(config_path)
 actor_network = load_actor_network(config)
 scaling_factors = config['scaling']
 default_joint_angles = config['robot']['default_joint_angles']
+################
+joint_def_nn = config['robot']['default_joint_angles']
+torques_mpc, vels_mpc, pos_mpc = load_mpc_data(config)
+use_backup = False
+iter_mpc = 0
+low_tau = config['actions']['bounds']['low']
+high_tau = config['actions']['bounds']['high']
 
 # Low-level command parameters
 TARGET_PORT = 8007
@@ -89,6 +96,21 @@ def get_safety_button():
 
         safety_button = joystick.get_button(3)
         if safety_button:
+            return True
+       
+    return False
+
+def get_backup_policy(): 
+    """Function to check if the button that activates the backup policy is pressed.
+       ? buttoon for corrent joystick"""
+
+    if pygame.joystick.get_count() == 1:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        backup_button = joystick.get_button(2)
+        if backup_button:
             return True
        
     return False
@@ -151,16 +173,21 @@ def compute_actions(state, scaling_factors):
         
         inference_ready.wait()  # Wait for signal from the main thread
         inference_ready.clear()
+        ################## input for network
+        if use_backup:
+            obs = compute_observation(state, scaling_factors)
+            obs_order = order_state(obs)
+            obs_tensor = torch.tensor(obs_order, dtype=torch.float32)
+            obs_normalized = actor_network.norm_obs(obs_tensor)
 
-        obs = compute_observation(state, scaling_factors)
-        obs_tensor = torch.tensor(obs, dtype=torch.float32)
-        obs_normalized = actor_network.norm_obs(obs_tensor)
-
-        with torch.no_grad():
-            new_actions1 = actor_network(obs_normalized).numpy()
-        
-        # Swap the actions to the correct order for SDK
-        new_actions = swap_legs(new_actions1)
+            with torch.no_grad():
+                pos_backup = actor_network(obs_normalized).numpy()
+                #new_actions1 = order_state(pos_backup + default_joint_angles)
+            
+            # Swap the actions to the correct order for SDK
+            new_actions = order_backup(pos_backup + joint_def_nn)#####swap_legs(new_actions1)
+        else:
+            new_actions = pos_mpc[iter_mpc]
 
         with lock:
             previous_actions[:] = latest_actions  # Store current actions as previous
@@ -230,6 +257,26 @@ if __name__ == '__main__':
     Kp = [100, 100, 100]
     Kd = [3, 3, 3]
 
+    ###############PD NN
+    KpH_nn = 25
+    KpT_nn = 25
+    KpC_nn = 25
+    Kp_nn = np.array([KpH_nn, KpT_nn, KpC_nn,
+                      KpH_nn, KpT_nn, KpC_nn,
+                      KpH_nn, KpT_nn, KpC_nn,
+                      KpH_nn, KpT_nn, KpC_nn])
+
+    KdH_nn = 0.5
+    KdT_nn = 0.5
+    KdC_nn = 0.5
+    Kd_nn = np.array([KdH_nn, KdT_nn, KdC_nn,
+                      KdH_nn, KdT_nn, KdC_nn,
+                      KdH_nn, KdT_nn, KdC_nn,
+                      KdH_nn, KdT_nn, KdC_nn])
+    
+    dq_real = np.zeros(12)
+    q_real = np.zeros(12)
+
     actions = torch.zeros(12, dtype=torch.float32)
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
@@ -273,6 +320,11 @@ if __name__ == '__main__':
             Kd = [0, 0, 0]  # Set Kd to 0 for all joints
             exit()
 
+        ########## Check if the backup policy has to be activated
+        backup_button = get_backup_policy()
+        if backup_button:
+            use_backup = True
+
         # First, record initial position
         if( motiontime >= 0 and motiontime < 1*(1/dt)):
             # Extract qInit values using dictionary keys
@@ -287,7 +339,7 @@ if __name__ == '__main__':
             #qDes = [jointLinearInterpolation(qInit[i], default_joint_angles[i], rate) for i in range(12)]
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
         
-        elif( motiontime >= 7*(1/dt)):
+        elif( motiontime >= 7*(1/dt)): ######### Use network if button was pressed
 
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
@@ -297,11 +349,15 @@ if __name__ == '__main__':
             with lock:  
                 current_actions = np.copy(latest_actions)
 
+            ################ torques from MPC
+            if not use_backup:
+                ctrl = torques_mpc[iter_mpc]
+                dqDes = vels_mpc[iter_mpc]
+                u = np.clip(ctrl, low_tau, high_tau)
             #print(current_actions)
             qDes = 0.5 * current_actions + np.array(default_joint_angles)
 
         # Clip the joint angles to the joint limits
-        ############# Check limits
         for i in range(4):
             qDes[i*3] = np.clip(qDes[i*3], -1.22, 1.22) # Hip joint
             qDes[i*3+1] = np.clip(qDes[i*3+1], 0.0, 1.8) # Thigh joint
@@ -309,11 +365,22 @@ if __name__ == '__main__':
 
         ###################### Data for PD
         if motiontime >= 1*(1/dt):
+            ################ PD for backup
+            if use_backup:
+                dqDes = 0
+                k = 0
+                for key in d:
+                    dq_real[k] = state.motorState[d[key]].q
+                    q_real[k] = state.motorState[d[key]].dq
+                    k += 1
+                ctrl = Kd_nn * (- dq_real) + Kp_nn * (current_actions - q_real)
+                u = np.clip(ctrl, low_tau, high_tau)
+
             for leg_idx, leg in enumerate(legs):
                 for joint_idx, joint in enumerate(joints):
                     key = f"{leg}{joint}"
                     cmd.motorCmd[d[key]].q = qDes[leg_idx * 3 + joint_idx]
-                    cmd.motorCmd[d[key]].dq = 0
+                    cmd.motorCmd[d[key]].dq = dqDes###########0
                     cmd.motorCmd[d[key]].Kp = Kp[joint_idx]
                     cmd.motorCmd[d[key]].Kd = Kd[joint_idx]
                     cmd.motorCmd[d[key]].tau = torque_values[joint_idx]
