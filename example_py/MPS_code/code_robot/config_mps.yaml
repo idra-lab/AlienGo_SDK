@@ -36,6 +36,6 @@ scaling:
 
 paths:
   checkpoint_path: best_agent.pt
-  torque_path: data/torques.csv
-  velocity_path: data/vels.csv
-  position_path: data/pos.csv
+  torque_path: /home/aliengo_ws/Documents/projects/AlienGo_SDK/example_py/MPS_code/code_robot/data/torques.csv
+  velocity_path: /home/aliengo_ws/Documents/projects/AlienGo_SDK/example_py/MPS_code/code_robot/data/vels.csv
+  position_path: /home/aliengo_ws/Documents/projects/AlienGo_SDK/example_py/MPS_code/code_robot/data/pos.csv

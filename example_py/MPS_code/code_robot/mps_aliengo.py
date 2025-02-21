@@ -10,7 +10,7 @@ sys.path.append('../lib/python/amd64')
 import robot_interface as sdk
 
 # Neural network and configuration imports
-from config_loader.config_loader import load_config, load_actor_network, load_mpc_data
+from config_loader import load_config, load_actor_network, load_mpc_data
 from utils import scale_axis, quat_rotate_inverse, swap_legs, clip_torques_in_groups, order_state, order_backup
 import pygame
 
@@ -19,24 +19,28 @@ import threading
 # Initialize pygame and the joystick module
 pygame.init()
 pygame.joystick.init()
+pygame.display.set_mode((100,100))
 
 # Check if there is at least one joystick (gamepad) connected
-if pygame.joystick.get_count() == 0:
-    print("No joystick connected")
-else:
-    joystick = pygame.joystick.Joystick(0)  # Get the first joystick
-    joystick.init()
-    print(f"Detected joystick: {joystick.get_name()}")
+#if pygame.joystick.get_count() == 0:
+#    print("No joystick connected")
+#else:
+#    joystick = pygame.joystick.Joystick(0)  # Get the first joystick
+#    joystick.init()
+#    print(f"Detected joystick: {joystick.get_name()}")
 
 # Config and neural network setup
-config_path = "config.yaml"
+config_path = "/home/aliengo_ws/Documents/projects/AlienGo_SDK/example_py/MPS_code/code_robot/config_mps.yaml"
 config = load_config(config_path)
-actor_network = load_actor_network(config)
+#actor_network = load_actor_network(config)
 scaling_factors = config['scaling']
 default_joint_angles = config['robot']['default_joint_angles']
 ################
 joint_def_nn = config['robot']['default_joint_angles']
 torques_mpc, vels_mpc, pos_mpc = load_mpc_data(config)
+max_iter = 500# len(torques_mpc)
+print("Max iterations:")
+print(max_iter)
 use_backup = False
 iter_mpc = 0
 low_tau = config['actions']['bounds']['low']
@@ -87,17 +91,16 @@ def get_commands():
         exit()
     
 def get_safety_button(): 
-    """Function to check if the safety button on the controller is pressed. Y buttoon for corrent joystick"""
+    """Function to check if the safety button on the controller is pressed. Y button for corrent joystick"""   
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+        if event.type == pygame.KEYDOWN:
+            print("Keydown detected")
+            if event.key == pygame.K_0:
+                print("0 Pressed, QUITTING !!!!")
+                return True
 
-    if pygame.joystick.get_count() == 1:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-        safety_button = joystick.get_button(3)
-        if safety_button:
-            return True
-       
     return False
 
 def get_backup_policy(): 
@@ -214,10 +217,14 @@ def check_safety_stops(state):
 
     stop_button = get_safety_button()  # Check if the safety button is pressed
 
-    if pygame.joystick.get_count() != 1:
-        return True
+    #print("checking stop button ", stop_button)
+    #print("inclination ", inclination)
 
-    if inclination > np.pi/8 or stop_button:
+    #if pygame.joystick.get_count() != 1:
+    #00    return True
+
+    if stop_button:#inclination > np.pi/4 or
+        print('inclination', inclination*180/np.pi)
         return True
     else:
         return False
@@ -233,13 +240,16 @@ if __name__ == '__main__':
     legs = ['FR', 'FL', 'RR', 'RL']
     joints = ['_0', '_1', '_2']
     torque_values = [-1.6, 0.0, 0.0]
+    u = torque_values*4
 
     PosStopF  = math.pow(10,9)
     VelStopF  = 16000.0
     HIGHLEVEL = 0x00
     LOWLEVEL  = 0xff
-    sin_mid_q = 4*[0.0, 0.7, -1.5] # Creates a 12-elements list with the default joint angles for the standup
-    dt = 0.002
+    ###sin_mid_q = 4*[0.0, 0.7, -1.5] # Creates a 12-elements list with the default joint angles for the standup
+    sin_mid_q = 4*[0.0, 0.75, -1.5] # Creates a 12-elements list with the default joint angles for the standup
+    #dt = 0.002 # Standard frequency from AlienGo
+    dt = 0.01 # MPC frequency
 
     qInit = [0, 0, 0,
              0, 0, 0,
@@ -247,6 +257,11 @@ if __name__ == '__main__':
              0, 0, 0]
     
     qDes = [0, 0, 0,
+            0, 0, 0,
+            0, 0, 0,
+            0, 0, 0]
+    
+    dqDes = [0, 0, 0,
             0, 0, 0,
             0, 0, 0,
             0, 0, 0]
@@ -281,7 +296,7 @@ if __name__ == '__main__':
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     ################## dt = 0.01, decimation = 5
-    decimation = 4
+    decimation = 5
 
     # Initialize the UDP connection
     udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
@@ -291,15 +306,16 @@ if __name__ == '__main__':
     state = sdk.LowState()
     udp.InitCmdData(cmd)
     cmd.levelFlag = LOWLEVEL
+    print("Got the state from the robot")
+    print(state)
 
     motiontime = 0
 
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
 
     # Start the inference thread
-    threading.Thread(target=compute_actions, args=(state, scaling_factors), daemon=True).start()
-
-    while True:
+    #threading.Thread(target=compute_actions, args=(state, scaling_factors), daemon=True).start()
+    while iter_mpc < max_iter:
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
         The main loop for sending commands is running at 500Hz
@@ -319,7 +335,7 @@ if __name__ == '__main__':
             Kp = [0, 0, 0]  # Set Kp to 0 for all joints
             Kd = [0, 0, 0]  # Set Kd to 0 for all joints
             exit()
-
+        #continue
         ########## Check if the backup policy has to be activated
         backup_button = get_backup_policy()
         if backup_button:
@@ -342,20 +358,22 @@ if __name__ == '__main__':
         elif( motiontime >= 7*(1/dt)): ######### Use network if button was pressed
 
             # Trigger inference every `decimation` steps
-            if motiontime % decimation == 0:
-                inference_ready.set()
+            #if motiontime % decimation == 0:
+            #    inference_ready.set()
 
             # Get the latest available actions
-            with lock:  
-                current_actions = np.copy(latest_actions)
+            #with lock:  
+            #    current_actions = np.copy(latest_actions)
 
             ################ torques from MPC
-            if not use_backup:
+            if not use_backup: #and motiontime % decimation == 0:
                 ctrl = torques_mpc[iter_mpc]
                 dqDes = vels_mpc[iter_mpc]
+                qDes = pos_mpc[iter_mpc]
                 u = np.clip(ctrl, low_tau, high_tau)
+                iter_mpc += 1
             #print(current_actions)
-            qDes = 0.5 * current_actions + np.array(default_joint_angles)
+            #qDes = 0.5 * current_actions + np.array(default_joint_angles)
 
         # Clip the joint angles to the joint limits
         for i in range(4):
@@ -366,8 +384,9 @@ if __name__ == '__main__':
         ###################### Data for PD
         if motiontime >= 1*(1/dt):
             ################ PD for backup
+            
             if use_backup:
-                dqDes = 0
+                dqDes = np.zeros(12)
                 k = 0
                 for key in d:
                     dq_real[k] = state.motorState[d[key]].q
@@ -375,15 +394,18 @@ if __name__ == '__main__':
                     k += 1
                 ctrl = Kd_nn * (- dq_real) + Kp_nn * (current_actions - q_real)
                 u = np.clip(ctrl, low_tau, high_tau)
-
+            print(qDes)
+            print(u)
             for leg_idx, leg in enumerate(legs):
                 for joint_idx, joint in enumerate(joints):
                     key = f"{leg}{joint}"
                     cmd.motorCmd[d[key]].q = qDes[leg_idx * 3 + joint_idx]
-                    cmd.motorCmd[d[key]].dq = dqDes###########0
+                    print(qDes[leg_idx * 3 + joint_idx])
+                    cmd.motorCmd[d[key]].dq = dqDes[leg_idx * 3 + joint_idx]###########0
                     cmd.motorCmd[d[key]].Kp = Kp[joint_idx]
                     cmd.motorCmd[d[key]].Kd = Kd[joint_idx]
-                    cmd.motorCmd[d[key]].tau = torque_values[joint_idx]
+
+                    cmd.motorCmd[d[key]].tau = u[leg_idx * 3 + joint_idx]#torque_values[joint_idx]
 
         """ temp = dt - (time.time() - step_start)
         if temp < 0:
@@ -403,6 +425,7 @@ if __name__ == '__main__':
 
         # Temporize the loop to maintain the desired frequency
         time_until_next_step = dt - (time.time() - step_start)
+        print('time_until_next_step',time_until_next_step)
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
         
