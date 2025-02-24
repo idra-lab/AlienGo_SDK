@@ -67,7 +67,7 @@ test_code = True#False#
 
 if test_code:
 
-        force_mag = 95
+        force_mag = 0
         force_applied = np.array([0.6584730894598917,-0.5965196811390472,0.458887197981067]) * force_mag
         iter_application = 22
         data_muj_70, x_warmstart, u_warmstart, ctrl_al, is_rec, prev_stage_ant, data_mps, qpos_dt, qvel_dt, qacc_dt, torques_dt, forces = aligatorMPShorizon.testForcesInit(backup_nn, model_muj, data_muj_init, model_pin, data_pin, collision, visual)

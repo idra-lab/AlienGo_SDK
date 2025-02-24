@@ -58,7 +58,7 @@ def viewMuJoCo2(model_muj, data_muj, qpos, qvel, qacc, torques, forces, force_bo
           viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
           viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = True
           viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = True
-          data_muj.qacc_warmstart = 0
+          data_muj.qacc_warmstart = qacc[0]
           if userview == "S" or userview == "s":
                viewer.cam.azimuth = 90
                viewer.cam.elevation=0
