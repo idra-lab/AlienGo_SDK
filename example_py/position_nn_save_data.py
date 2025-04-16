@@ -5,7 +5,7 @@ import time
 import math
 import numpy as np
 import torch
-from datetime import datetime
+import time
 import csv
 
 sys.path.append('../lib/python/amd64')
@@ -200,7 +200,7 @@ def check_safety_stops(state):
 def save_data(state):
     #IMU (acceleration, gyros), joint state values (position and velocity), timestamps
     imu = state.imu
-    current_timestamp = datetime.now()
+    current_timestamp = time.time_ns()
     body_acc = [imu.accelerometer[0], imu.accelerometer[1], imu.accelerometer[2]]
     body_vel = [imu.gyroscope[0], imu.gyroscope[1], imu.gyroscope[2]]
     joint_angles = [state.motorState[i].q for i in range(12)]
