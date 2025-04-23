@@ -321,7 +321,7 @@ if __name__ == '__main__':
             print(f"\033[32m{temp:.5f}\033[0m") """
            
         """ Safety checks"""
-        safe.PowerProtect(cmd, state, 7)
+        safe.PowerProtect(cmd, state, 8)
         safe.PositionLimit(cmd)
 
         if motiontime > 5*(1/dt):
@@ -334,6 +334,9 @@ if __name__ == '__main__':
         time_until_next_step = dt - (time.time() - step_start)
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
+
+        else:
+            print('time', time_until_next_step)
         
         # elapsed_time = time.time() - step_start  # Time taken for the loop iteration
         # print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)")

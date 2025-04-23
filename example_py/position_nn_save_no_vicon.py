@@ -21,60 +21,6 @@ import pygame
 import threading
 
 
-
-def on_packet(packet):
-    global last_pos
-    global last_rot
-    """ Callback function that is called everytime a data packet arrives from QTM """
-    # print("Framenumber: {}".format(packet.framenumber))
-    # header, markers = packet.get_3d_markers()
-    # print("Component info: {}".format(header))
-    # for marker in markers:
-    #     print("\t", marker)
-    _, bodies = packet.get_6d()
-    for i, body in enumerate(bodies):
-        pos, rot = body
-        x, y, z = pos
-        rot_elements = [j for j in rot[0]]
-        if i == 0:
-            last_pos = np.array([x,y,z])
-            #print(last_pos.copy())
-            last_rot = np.array(rot_elements)
-           # if last_meas is not None:
-            #    print('last_meas',last_meas)
-        # print(f"Body n {i}, Pos = {x}, {y}, {z}")
-
-async def setup():
-    """ Main function """
-    connection = await qtm_rt.connect("192.168.225.1")
-    if connection is None:
-        return
-
-    await connection.stream_frames(components=["6d"], on_packet=on_packet)
-
-'''@asyncio.coroutine
-async def main():
-     asyncio.create_task(setup())
-     await asyncio.sleep(1)'''
-
-class QTMStreamer:
-    def __init__(self):
-        self.loop = asyncio.new_event_loop()
-        self.thread = threading.Thread(target=self._start_loop,daemon=True)
-
-    def _start_loop(self):
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
-    
-    def start(self):
-        self.thread.start()
-        future = asyncio.run_coroutine_threadsafe(setup(), self.loop)
-        return future
-    
-    def stop(self):
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join()
-
 # Initialize pygame and the joystick module
 pygame.init()
 pygame.joystick.init()
@@ -308,12 +254,12 @@ def save_data(state,motiontime,current_timestamp):
             wr.writerows([save])
     myfile.close()'''
 
-    if last_pos is not None:
+    '''if last_pos is not None:
         #print(last_pos.copy())
         data_pos.append(np.append(current_timestamp,last_pos.copy()))
 
     if last_rot is not None:
-        data_rot.append(np.append(current_timestamp,last_rot.copy()))
+        data_rot.append(np.append(current_timestamp,last_rot.copy()))'''
 
 #if __name__ == '__main__':
 def main():
@@ -366,8 +312,8 @@ def main():
     #MoCap
     #loop = asyncio.new_event_loop()
     #loop.run_until_complete(main())
-    streamer= QTMStreamer()
-    streamer.start()
+  #  streamer= QTMStreamer()
+  #  streamer.start()
 
     #asyncio.run(main())
     #asyncio.run(setup())
@@ -406,19 +352,19 @@ def main():
             '''np.savez_compressed('mocap_data.npz', pos=np.asarray(data_pos), rot=np.asarray(data_rot))
             print('Data saved')'''
 
-            name_save = nameFile + "_pos.csv"
+            '''name_save = nameFile + "_pos.csv"
             with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
                 wr = csv.writer(myfile)
                 wr.writerows(data_pos)
             myfile.close()
-            
+            exit()
 
             name_save = nameFile + "_rot.csv"
             with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
                 wr = csv.writer(myfile)
                 wr.writerows(data_rot)
             myfile.close()
-            
+            exit()'''
 
             name_save = nameFile + "_robot.csv"
             with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
@@ -445,15 +391,14 @@ def main():
             #qDes = [jointLinearInterpolation(qInit[i], default_joint_angles[i], rate) for i in range(12)]
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
 
-            if stop_walk and motiontime % 2 == 0:
+            if stop_walk:
                 save_data(state,motiontime,current_timestamp)
         # keep the robot 
-        elif(motiontime >= 7*(1/dt) and motiontime < 22*(1/dt)) and motiontime % 2 == 0:
+        elif(motiontime >= 7*(1/dt) and motiontime < 22*(1/dt)):
             save_data(state,motiontime,current_timestamp)
         #'''
         elif( motiontime >= 22*(1/dt)):
-            if motiontime % 2 == 0:
-                save_data(state,motiontime,current_timestamp)
+            save_data(state,motiontime,current_timestamp)
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
                 inference_ready.set()
@@ -501,8 +446,6 @@ def main():
         time_until_next_step = dt - (time.time() - step_start)
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
-        else:
-            print('time', time_until_next_step)
         
         # elapsed_time = time.time() - step_start  # Time taken for the loop iteration
         # print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)")
