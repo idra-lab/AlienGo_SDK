@@ -1,6 +1,9 @@
 robot:
-  Kp_b: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
-  Kd_b: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+  Kp_b: 25
+  Kd_b: 0.5
+  torque_limit: 40
+  vel_limit: 26.5
+  torque_values: [0.0, 0.0, 0.0]
 
 scaling:
   running_mean: [  0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.21205050e+00,
@@ -28,6 +31,7 @@ scaling:
   epsilon: 1e-8
   clip_threshold: 5.0
   default_joint_angles: [0.1, -0.1,  0.1, -0.1,  0.8,  0.8, 1.0,  1.0, -1.5, -1.5, -1.5, -1.5]
+  factor: 0.8
 
 paths:
   checkpoint_path: best_agent.pt

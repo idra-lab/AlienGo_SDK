@@ -5,7 +5,7 @@ import time
 import math
 import numpy as np
 import torch
-import mps
+import example_py.MPS_robot.mps_code as mps_code
 
 sys.path.append('../../lib/python/amd64')
 import robot_interface as sdk
@@ -32,11 +32,21 @@ else:
     print(f"Detected joystick: {joystick.get_name()}")
 
 # Config and neural network setup
-config_path = "config.yaml"
-config = load_config(config_path)
-actor_network = load_actor_network(config)
-scaling_factors = config['scaling']
-default_joint_angles = config['robot']['default_joint_angles']
+config_path = "config_nominal.yaml"
+config_n = load_config(config_path)
+actor_network = load_actor_network(config_n)
+scaling_factors = config_n['scaling']
+default_joint_angles = config_n['robot']['default_joint_angles']
+Kp_n = config_n['robot']['Kp_n']
+Kd_n = config_n['robot']['Kd_n']
+max_pos = config_n['robot']['max_pos']
+min_pos = config_n['robot']['min_pos']
+torque_values = config_n['robot']['torque_values']
+scaling_qdes = scaling_factors['factor']
+
+config_path = "config_backup.yaml"
+config_b = load_config(config_path)
+torque_values_b = config_b['robot']['torque_values']
 
 # Low-level command parameters
 TARGET_PORT = 8007
@@ -103,21 +113,18 @@ previous_actions = np.zeros(12)  # Store the previous actions
 inference_ready = threading.Event()  # Event to signal new inference results
 stop_threads = False  # Flag to stop threads gracefully
 
-def compute_observation(state, scaling_factors, is_rec):
+def compute_observation(state, scaling_factors):
     """
     Compute the observation vector from the robot's state.
     Legs are swapped to match the order of the neural network input.
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    if is_rec:
-        # Remove if the controller is not used
-        commands = get_commands() # The stopping condition here is not evaluated
+    # Remove if the controller is not used
+    #commands = get_commands() # The stopping condition here is not evaluated
 
-        # Add if the controller is not used
-        # commands = np.array([0,0,0]) # The stopping condition here is not evaluated
-    else:
-        commands = np.array([-0.45, -0.02, 0.])
+    # Add if the controller is not used
+    commands = np.array([0,0,0]) # The stopping condition here is not evaluated
 
     imu = state.imu
     body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
@@ -148,7 +155,7 @@ def compute_observation(state, scaling_factors, is_rec):
     # Concatenate into a single observation vector
     return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles, scaled_joint_velocities, scaled_actions))
 
-def compute_actions(state, scaling_factors, is_rec):
+def compute_actions(state, scaling_factors):
     """
     Inference on the nn to retrive actions from observations.
     Legs are swapped to match the order of the neural network input.
@@ -162,7 +169,7 @@ def compute_actions(state, scaling_factors, is_rec):
         inference_ready.wait()  # Wait for signal from the main thread
         inference_ready.clear()
 
-        obs = compute_observation(state, scaling_factors, is_rec)
+        obs = compute_observation(state, scaling_factors)
         obs_tensor = torch.tensor(obs, dtype=torch.float32)
         obs_normalized = actor_network.norm_obs(obs_tensor)
 
@@ -208,9 +215,6 @@ def check_safety_stops(state):
 
 if __name__ == '__main__':
 
-    # Model robot using MuJoCo for the MPS loop
-    model_muj, data_muj = mps.modelData()
-
     # Initialize as recoverable
     is_rec = True
 
@@ -221,7 +225,6 @@ if __name__ == '__main__':
 
     legs = ['FR', 'FL', 'RR', 'RL']
     joints = ['_0', '_1', '_2']
-    torque_values = [-1.6, 0.0, 0.0]
 
     PosStopF  = math.pow(10,9)
     VelStopF  = 16000.0
@@ -243,14 +246,17 @@ if __name__ == '__main__':
     rate_count = 0
 
     # PD tuning parameters
-    Kp = [100, 100, 100]
-    Kd = [3, 3, 3]
+    Kp = [Kp_n, Kp_n, Kp_n]
+    Kd = [Kd_n, Kd_n, Kd_n]
 
     actions = torch.zeros(12, dtype=torch.float32)
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     # Decimation changed to 5 to have a 100 Hz main loop, like in the simulations
     decimation = 5
+    mps = mps_code.MPS(decimation, max_pos, min_pos, scaling_qdes, torque_values, default_joint_angles, Kp_n, Kd_n, config_b)
+    Kp_b = mps.Kp_b
+    Kd_b = mps.Kd_b
 
     # Initialize the UDP connection
     udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
@@ -266,14 +272,13 @@ if __name__ == '__main__':
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
 
     # Start the inference thread
-    threading.Thread(target=compute_actions, args=(state, scaling_factors, is_rec), daemon=True).start()
+    threading.Thread(target=compute_actions, args=(state, scaling_factors), daemon=True).start()
 
     while True:
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
         The main loop for sending commands is running at 500Hz
         """
-        #time.sleep(dt)
         step_start = time.time()
         motiontime += 1
     
@@ -302,7 +307,7 @@ if __name__ == '__main__':
             #qDes = [jointLinearInterpolation(qInit[i], default_joint_angles[i], rate) for i in range(12)]
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
         
-        elif( motiontime >= 7*(1/dt)):
+        elif( motiontime >= 7*(1/dt) and is_rec):
 
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
@@ -311,17 +316,28 @@ if __name__ == '__main__':
             # Get the latest available actions
             with lock:  
                 current_actions = np.copy(latest_actions)
+                
+            qDes = scaling_qdes * current_actions + np.array(default_joint_angles)
 
-            #print(current_actions)
-            qDes = 0.5 * current_actions + np.array(default_joint_angles)
+            # Clip the joint angles to the joint limits
+            qDes = np.clip(qDes, min_pos, max_pos)
 
-            # MPS
+            # MPS check
+            is_rec, iter_mps = mps.isRecSingle(qDes)
+            if not is_rec:
+                # Change gains and torque values to start using the backup policy
+                Kp = [Kp_b, Kp_b, Kp_b]
+                Kd = [Kd_b, Kd_b, Kd_b]
+                torque_values = torque_values_b
+                last_action = np.zeros(12)
 
-        # Clip the joint angles to the joint limits
-        for i in range(4):
-            qDes[i*3] = np.clip(qDes[i*3], -1.22, 1.22) # Hip joint
-            qDes[i*3+1] = np.clip(qDes[i*3+1], 0.0, 1.8) # Thigh joint
-            qDes[i*3+2] = np.clip(qDes[i*3+2], -2.78, -0.65) # Calf joint
+        elif( motiontime >= 7*(1/dt) and not is_rec):
+            # Use backup policy if at some point the MPS detected the robot could not be stopped
+            imu = state.imu
+            imu[2] = -imu[2]
+            imu[1] = -imu[1]
+            qDes, last_action = mps_code.computeBackup(q_data, v_data, mps.backup_nn, imu, last_action)
+            
 
         if motiontime >= 1*(1/dt):
             for leg_idx, leg in enumerate(legs):
@@ -353,9 +369,6 @@ if __name__ == '__main__':
         time_until_next_step = dt - (time.time() - step_start)
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
-
-        else:
-            print('time', time_until_next_step)
         
         # elapsed_time = time.time() - step_start  # Time taken for the loop iteration
         # print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)")

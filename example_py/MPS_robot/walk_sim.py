@@ -1,3 +1,5 @@
+# Not used for the simulation
+
 import torch
 import numpy as np
 from utils import quat_rotate_inverse, swap_legs
