@@ -5,14 +5,14 @@ import time
 import math
 import numpy as np
 import torch
-import example_py.MPS_robot.mps_code as mps_code
+import example_py.MPS_robot_sensors.mps_code as mps_code
 
 sys.path.append('../../lib/python/amd64')
 import robot_interface as sdk
 
 # Neural network and configuration imports
 from config_loader.config_loader import load_config, load_actor_network
-from example_py.MPS_robot.utils import scale_axis, quat_rotate_inverse, swap_legs
+from example_py.MPS_robot_sensors.utils import scale_axis, quat_rotate_inverse, swap_legs
 #import pygame
 
 import threading
@@ -338,7 +338,9 @@ if __name__ == '__main__':
 
         elif( motiontime >= 7*(1/dt) and not is_rec):
             # Use backup policy if at some point the MPS detects it is not possible to stop the robot
-            qDes, last_action = mps_code.computeBackup(q_data, v_data, mps.backup_nn)
+            imu = state.imu
+            body_acc = np.array([imu.accelerometer[0], -imu.accelerometer[1], -imu.accelerometer[2]])
+            qDes, last_action = mps_code.computeBackup(q_data, v_data, mps.backup_nn, body_acc, last_action)
             
 
         if motiontime >= 1*(1/dt):

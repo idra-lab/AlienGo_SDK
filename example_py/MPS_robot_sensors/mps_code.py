@@ -36,7 +36,7 @@ class Backup(nn.Module):
     def __init__(self, config_b, device):
         super(Backup, self).__init__()
         self.layers = nn.Sequential(
-            nn.Linear(37, 256),
+            nn.Linear(42, 256),
             nn.ELU(),
             nn.Linear(256, 256),
             nn.ELU(),
@@ -70,22 +70,26 @@ def labels_state_dict(old_state_dict, old_keys, new_keys):
             new_dict += 1
     return new_state_dict
 
-def computeBackup(q_data, v_data, backup_nn):
+def computeBackup(q_data, v_data, backup_nn, imu_acc, last_action):
     """ 
         Use the backup policy to compute the desired joint positions
         to stop the robot.
         The network requires the following inputs:
+        * Velocity commands   -->   torch.tensor([0.0, 0.0, 0.0])
+        * IMU (gravity is considered)
         * Joint positions
         * Joint velocities
+        * Last actions
 
         The network returns the desired joint positions and the actions
         that generated them.
     """
-
-    state_order = orderState(q_data, v_data)
+    vel_comm = np.zeros(3)
+    pos_order, vel_order = orderState(q_data, v_data)
+    state_order = np.concatenate((vel_comm, imu_acc, pos_order, vel_order, last_action))
     state_torch = torch.from_numpy(state_order)
     state_torch = state_torch.to(backup_nn.device, torch.float32)
-    state_torch[13:25] = state_torch[13:25] - backup_nn.joint_def
+    state_torch[6:18] = state_torch[6:18] - backup_nn.joint_def
 
     scaled_state = torch.clamp((state_torch - backup_nn.mean.float()) / backup_nn.scale,
                 min=-backup_nn.threshold, max=backup_nn.threshold)
@@ -94,7 +98,7 @@ def computeBackup(q_data, v_data, backup_nn):
     new_action = backup_nn.forward(scaled_state) 
     pos_backup_order = orderBackup((new_action * backup_nn.scaling_factor) + backup_nn.joint_def)
     
-    return pos_backup_order
+    return pos_backup_order, new_action.detach().cpu().numpy()
 
 
 def orderState(pos, vel):
@@ -103,9 +107,8 @@ def orderState(pos, vel):
         from the one used for the robot and MuJoCo to the one
         required by the network.
     """
-    order_pos = [10, 7, 16, 13, 11, 8, 17, 14, 12, 9, 18, 15]
-    order_vel = [ 9, 6, 15, 12, 10, 7, 16, 13, 11, 8, 17, 14]
-    return np.concatenate((pos[0:7], vel[0:6], pos[order_pos], vel[order_vel]))
+    new_order = [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
+    return pos[new_order], vel[new_order]
 
 def orderBackup(pos):
     """
@@ -198,7 +201,11 @@ class MPS:
                 return False, iter_mps
             
             # Simulate x with pi_rec
-            pos_backup_order = computeBackup(q_muj[7:], v_muj[6:], self.backup_nn)
+            imu_acc = data.sensor('Body_Acc').data.copy()
+            imu_acc[2] = -imu_acc[2]
+            imu_acc[1] = -imu_acc[1]
+
+            pos_backup_order, last_action = computeBackup(q_muj[7:], v_muj[6:], self.backup_nn, imu_acc, last_action)
             iter_mps += 1
             
             j = 0
