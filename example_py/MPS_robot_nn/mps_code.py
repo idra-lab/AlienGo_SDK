@@ -3,6 +3,8 @@ import mujoco
 import torch
 import torch.nn as nn
 from collections import OrderedDict
+from walk_sim import compute_actions_sim
+from example_py.MPS_robot_nn.utils import swap_legs
 
 def modelData():
     # MuJoCo robot model
@@ -36,7 +38,7 @@ class Backup(nn.Module):
     def __init__(self, config_b, device):
         super(Backup, self).__init__()
         self.layers = nn.Sequential(
-            nn.Linear(37, 256),
+            nn.Linear(42, 256),
             nn.ELU(),
             nn.Linear(256, 256),
             nn.ELU(),
@@ -70,22 +72,26 @@ def labels_state_dict(old_state_dict, old_keys, new_keys):
             new_dict += 1
     return new_state_dict
 
-def computeBackup(q_data, v_data, backup_nn):
+def computeBackup(q_data, v_data, backup_nn, imu_acc, last_action):
     """ 
         Use the backup policy to compute the desired joint positions
         to stop the robot.
         The network requires the following inputs:
+        * Velocity commands   -->   torch.tensor([0.0, 0.0, 0.0])
+        * IMU (gravity is considered)
         * Joint positions
         * Joint velocities
+        * Last actions
 
         The network returns the desired joint positions and the actions
         that generated them.
     """
-
-    state_order = orderState(q_data, v_data)
+    vel_comm = np.zeros(3)
+    pos_order, vel_order = orderState(q_data, v_data)
+    state_order = np.concatenate((vel_comm, imu_acc, pos_order, vel_order, last_action))
     state_torch = torch.from_numpy(state_order)
     state_torch = state_torch.to(backup_nn.device, torch.float32)
-    state_torch[13:25] = state_torch[13:25] - backup_nn.joint_def
+    state_torch[6:18] = state_torch[6:18] - backup_nn.joint_def
 
     scaled_state = torch.clamp((state_torch - backup_nn.mean.float()) / backup_nn.scale,
                 min=-backup_nn.threshold, max=backup_nn.threshold)
@@ -94,7 +100,7 @@ def computeBackup(q_data, v_data, backup_nn):
     new_action = backup_nn.forward(scaled_state) 
     pos_backup_order = orderBackup((new_action * backup_nn.scaling_factor) + backup_nn.joint_def)
     
-    return pos_backup_order
+    return pos_backup_order, new_action.detach().cpu().numpy()
 
 
 def orderState(pos, vel):
@@ -103,9 +109,8 @@ def orderState(pos, vel):
         from the one used for the robot and MuJoCo to the one
         required by the network.
     """
-    order_pos = [10, 7, 16, 13, 11, 8, 17, 14, 12, 9, 18, 15]
-    order_vel = [ 9, 6, 15, 12, 10, 7, 16, 13, 11, 8, 17, 14]
-    return np.concatenate((pos[0:7], vel[0:6], pos[order_pos], vel[order_vel]))
+    new_order = [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
+    return pos[new_order], vel[new_order]
 
 def orderBackup(pos):
     """
@@ -117,7 +122,7 @@ def orderBackup(pos):
     return pos[order_pos].detach().cpu().numpy()
 
 class MPS:
-    def __init__(self, decimation, max_pos, min_pos, torque_values, Kp_n, Kd_n, config_b):
+    def __init__(self, decimation, max_pos, min_pos, torque_values, Kp_n, Kd_n, scaling_qdes, default_joint_angles):
         # Compute the number of MuJoCo iterations to use each network output 
         self.iter_ctrl = decimation
 
@@ -127,6 +132,8 @@ class MPS:
         self.torque_values = torque_values
         self.Kp_n = Kp_n
         self.Kd_n = Kd_n
+        self.scaling_qdes = scaling_qdes
+        self.default_joint_angles = default_joint_angles
 
         # Limits and conditions for the MPS
         self.jmax_compare = np.array([max_pos[0],max_pos[2],max_pos[3],max_pos[5],max_pos[6],max_pos[8],max_pos[9],max_pos[11]])
@@ -135,22 +142,11 @@ class MPS:
         self.N_mps = 50 # Number of MPS simulation steps to decide which policy to use
         self.X_inv = 10e-2 # Maximum velocity to consider the robot has stopped
 
-        # Read parameters for the backup policy from the configuration file
-        self.lim_tau = config_b['robot']['torque_limit']
-        self.lim_vel = config_b['robot']['vel_limit']
-        self.Kp_b = config_b['robot']['Kp_b']
-        self.Kd_b = config_b['robot']['Kd_b']
-
         # Model robot using MuJoCo for the MPS loop
         self.model, self.data = modelData()
+        
 
-        # Load backup network
-        device = torch.device('cpu')
-        if torch.cuda.is_available():
-                device = torch.device('cuda')
-        self.backup_nn = load_backup_nn(config_b, device)
-
-    def isRecSingle(self, qDes):
+    def isRecSingle(self, qDes, sim_nn, previous_actions, current_actions):
         iter_mps = 0
 
         data = self.data
@@ -198,15 +194,19 @@ class MPS:
                 return False, iter_mps
             
             # Simulate x with pi_rec
-            pos_backup_order = computeBackup(q_muj[7:], v_muj[6:], self.backup_nn)
+            new_actions1 = compute_actions_sim(data, self.scaling_factors, previous_actions, False, sim_nn)
+            previous_actions = current_actions
+            current_actions = swap_legs(new_actions1)
+            qDes = self.scaling_qdes * current_actions + np.array(self.default_joint_angles)
+            qDes = np.clip(qDes, self.min_pos, self.max_pos)
+
             iter_mps += 1
             
             j = 0
             while j < self.iter_ctrl:
                 j += 1
-                u_backup = self.Kd_b * (- v_muj[6:]) + self.Kp_b * (pos_backup_order - q_muj[7:])
+                u_backup = self.Kd_n * (- v_muj[6:]) + self.Kp_n * (qDes - q_muj[7:]) +  torque_values
                 data.ctrl = np.clip(u_backup, -self.lim_tau, self.lim_tau)
-
                 mujoco.mj_step(self.model, data)
                 q_muj = data.qpos.copy()
                 v_muj = data.qvel.copy()

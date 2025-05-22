@@ -135,7 +135,7 @@ class MPS:
         self.jmax_compare = np.array([max_pos[0],max_pos[2],max_pos[3],max_pos[5],max_pos[6],max_pos[8],max_pos[9],max_pos[11]])
         self.jmin_compare = np.array([min_pos[0],min_pos[2],min_pos[3],min_pos[5],min_pos[6],min_pos[8],min_pos[9],min_pos[11]])
         self.X_safe = 0.1 # Minimum height not to consider a fall for trunk and hips
-        self.N_mps = 200 # Number of MPS simulation steps to decide which policy to use
+        self.N_mps = 50 # Number of MPS simulation steps to decide which policy to use
         self.X_inv = 10e-2 # Maximum velocity to consider the robot has stopped
 
         # Read parameters for the backup policy from the configuration file
