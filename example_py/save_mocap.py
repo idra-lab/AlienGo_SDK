@@ -13,6 +13,12 @@ import csv
 import sys
 import signal
 
+data_pos = []
+data_rot = []
+time_file = time.localtime()
+nameFile = 'data' + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min)
+
+
 def signal_handler(signal, frame):
     name_save = nameFile + "_pos.csv"
     with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
@@ -56,11 +62,7 @@ async def main():
     asyncio.create_task(setup())
 
     await asyncio.sleep(1)
-    global data_pos = []
-    global data_rot = []
-    time_file = time.localtime()
-    global nameFile = 'data' + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min)
-
+    
     current_timestamp = time.time_ns()
     while True: 
         current_timestamp = time.time_ns()

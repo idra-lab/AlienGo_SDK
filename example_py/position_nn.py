@@ -10,7 +10,7 @@ sys.path.append('../lib/python/amd64')
 import robot_interface as sdk
 
 # Neural network and configuration imports
-from config_loader.config_loader import load_config, load_actor_network
+from config_loader import load_config, load_actor_network
 from utils import scale_axis, quat_rotate_inverse, swap_legs, clip_torques_in_groups
 import pygame
 
@@ -334,9 +334,6 @@ if __name__ == '__main__':
         time_until_next_step = dt - (time.time() - step_start)
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
-
-        else:
-            print('time', time_until_next_step)
         
         # elapsed_time = time.time() - step_start  # Time taken for the loop iteration
         # print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)")
