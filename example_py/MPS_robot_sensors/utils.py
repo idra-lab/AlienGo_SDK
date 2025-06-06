@@ -3,13 +3,11 @@ import torch
 def swap_legs(array):
     """
     Swap the front and rear legs of the array based on predefined indices.
-    
-    The swap logic is fixed:
-    - Swap front legs (indices 3:6) with (0:3)
-    - Swap rear legs (indices 9:12) with (6:9)
+
+    Convert from NN convention LF RF LH RH to Pinocchio LF LH RF RH
     """
     array_copy = array.copy()  # Make a copy to avoid modifying the original array
-    order = [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]
+    order = [0, 1, 2, 6,7,8, 3,4,5,9, 10, 11]
     return array_copy[order]
 
 # Quaternion rotation helper

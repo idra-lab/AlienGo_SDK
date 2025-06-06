@@ -3,10 +3,11 @@ import mujoco
 import torch
 import torch.nn as nn
 from collections import OrderedDict
+import os
 
 def modelData():
     # MuJoCo robot model
-    xml = '/aliengo_models/xml/aliengo.xml'
+    xml = os.environ["LOCOSIM_DIR"] + '/robot_control/AlienGo_SDK/example_py/MPS_robot_sensors/aliengo_models/xml/aliengo.xml'
     spec = mujoco.MjSpec()
     spec.from_file(xml)
     model_muj = spec.compile()
@@ -14,11 +15,12 @@ def modelData():
 
     return model_muj, data_muj
 
-def load_backup_nn(config_b, device):
+def load_backup_nn(config, device):
     """
         Load backup policy and change the dictionary labels.
     """
-    PATH = config_b['paths']['checkpoint_path']
+    PATH = os.environ["LOCOSIM_DIR"] + '/robot_control/AlienGo_SDK/example_py/MPS_robot_sensors/' + \
+                       config['backup']['paths']['checkpoint_path']
     dict_policy = torch.load(PATH, map_location=torch.device(device))['policy']
 
     old_keys = ["net.0.weight", "net.0.bias",      "net.2.weight",      "net.2.bias",
@@ -27,12 +29,12 @@ def load_backup_nn(config_b, device):
                 "layers.4.weight", "layers.4.bias", "layers.6.weight", "layers.6.bias"]
 
     new_policy_dict = labels_state_dict(dict_policy, old_keys, new_keys)
-    backup_nn = Backup(config_b, device)
+    backup_nn = Backup(config, device)
     backup_nn.load_state_dict(new_policy_dict)
     return backup_nn
 
 class Backup(nn.Module):
-    def __init__(self, config_b, device):
+    def __init__(self, config, device):
         super(Backup, self).__init__()
         self.layers = nn.Sequential(
             nn.Linear(42, 256),
@@ -44,12 +46,12 @@ class Backup(nn.Module):
             nn.Linear(128, 12)
         ).to(device)
 
-        self.mean = config_b['scaling']['running_mean']
-        self.threshold = config_b['scaling']['clip_threshold']
-        self.joint_def = config_b['scaling']['joint_def']
-        self.scaling_factor = config_b['scaling']['factor']
-        running_variance = config_b['scaling']['running_variance']
-        epsilon = config_b['scaling']['epsilon']
+        self.mean =  torch.tensor(config['backup']['scaling']['running_mean'], device=torch.device('cpu'), dtype=torch.float64)
+        self.joint_def = torch.tensor(config['backup']['scaling']['default_joint_angles'], device=torch.device('cpu'), dtype=torch.float64)
+        running_variance = torch.tensor(config['backup']['scaling']['running_variance'], device=torch.device('cpu'), dtype=torch.float64)
+        self.scaling_factor = float(config['backup']['scaling']['factor'])
+        self.threshold = float(config['backup']['scaling']['clip_threshold'])
+        epsilon = float(config['backup']['scaling']['epsilon'])
         self.scale = torch.sqrt(running_variance.float()) + epsilon
         self.device = device
 
@@ -119,7 +121,7 @@ def orderBackup(pos):
     return pos[order_pos].detach().cpu().numpy()
 
 class MPS:
-    def __init__(self, decimation, max_pos, min_pos, torque_values, Kp_n, Kd_n, config_b):
+    def __init__(self, decimation, max_pos, min_pos, torque_values, Kp_n, Kd_n, config):
         # Compute the number of MuJoCo iterations to use each network output 
         self.iter_ctrl = decimation
 
@@ -138,10 +140,10 @@ class MPS:
         self.X_inv = 10e-2 # Maximum velocity to consider the robot has stopped
 
         # Read parameters for the backup policy from the configuration file
-        self.lim_tau = config_b['robot']['torque_limit']
-        self.lim_vel = config_b['robot']['vel_limit']
-        self.Kp_b = config_b['robot']['Kp_b']
-        self.Kd_b = config_b['robot']['Kd_b']
+        self.lim_tau = config['backup']['robot']['torque_limit']
+        self.lim_vel = config['backup']['robot']['vel_limit']
+        self.Kp_b = config['backup']['robot']['Kp_b']
+        self.Kd_b = config['backup']['robot']['Kd_b']
 
         # Model robot using MuJoCo for the MPS loop
         self.model, self.data = modelData()
@@ -150,7 +152,7 @@ class MPS:
         device = torch.device('cpu')
         if torch.cuda.is_available():
                 device = torch.device('cuda')
-        self.backup_nn = load_backup_nn(config_b, device)
+        self.backup_nn = load_backup_nn(config, device)
 
     def isRecSingle(self, qDes, pose, twist, joint_pos, joint_vel):
         iter_mps = 0

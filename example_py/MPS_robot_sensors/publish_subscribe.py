@@ -2,6 +2,7 @@ import rospy
 import numpy as np
 from sensor_msgs.msg import Imu, JointState
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
+from nav_msgs.msg import Odometry
 
 class PubSub():
     def __init__(self):
@@ -11,44 +12,91 @@ class PubSub():
         self.joint_pos = np.zeros(12)
         self.joint_vel = np.zeros(12)
         self.pose = np.zeros(7)
-        self.twist = np.zeros(3)
+        self.twist = np.zeros(6)
 
-    def callback_imu(self, data):
-        self.imu_acc[0] = data
-        self.imu_acc[1] = data
-        self.imu_acc[2] = data
 
-        self.imu_gyro[0] = data
-        self.imu_gyro[1] = data
-        self.imu_gyro[2] = data
+    def callback_imu(self, msg):
+        # Timestamp
+        self.imu_time = msg.header.stamp.to_sec()
 
-        self.imu_quat[0] = data
-        self.imu_quat[1] = data
-        self.imu_quat[2] = data
-        self.imu_quat[3] = data
+        # Orientation quaternion [x, y, z, w]
+        self.imu_quat  = np.array([
+            msg.orientation.x,
+            msg.orientation.y,
+            msg.orientation.z,
+            msg.orientation.w,
+        ], dtype=np.float64)
+
+        # Angular velocity [x, y, z]
+        self.imu_gyro = np.array([
+            msg.angular_velocity.x,
+            msg.angular_velocity.y,
+            msg.angular_velocity.z
+        ], dtype=np.float64)
+
+        # Linear acceleration [x, y, z]
+        self.imu_acc = np.array([
+            msg.linear_acceleration.x,
+            msg.linear_acceleration.y,
+            msg.linear_acceleration.z
+        ], dtype=np.float64)
+
+    def odom_callback(self, msg):
+        # Timestamp
+        self.odom_time = msg.header.stamp.to_sec()
+
+        # Position [x, y, z]
+        self.pose = np.array([
+            msg.pose.pose.position.x,
+            msg.pose.pose.position.y,
+            msg.pose.pose.position.z,
+            msg.pose.pose.orientation.w,
+            msg.pose.pose.orientation.x,
+            msg.pose.pose.orientation.y,
+            msg.pose.pose.orientation.z,
+        ], dtype=np.float64)
+
+        # Linear velocity [x, y, z]
+        self.twist = np.array([
+            msg.twist.twist.linear.x,
+            msg.twist.twist.linear.y,
+            msg.twist.twist.linear.z,
+            msg.twist.twist.angular.x,
+            msg.twist.twist.angular.y,
+            msg.twist.twist.angular.z
+        ], dtype=np.float64)
 
     def callback_joint(self, data):
+        # Locosim interface provides:
+        # LF LH RF RH
+
+        # Neural network needs:
+        # LF RF LH RH
+
+        # Unitree uses:
+        # RF LF RH LH
+
+        # We convert from Locosim to Unitree HERE
+        # conversion from Unitree to NN will be done where the NN is used
+
+        indices = [0, 1, 2, 6, 7, 8, 3,4,5, 9, 10, 11]
+
         for i in range(12):
-            self.joint_pos[i] = data
-            self.joint_vel[i] = data
+            self.joint_pos[i] = data.position[indices[i]]
+            self.joint_vel[i] = data.velocity[indices[i]]
 
-    def callback_pose(self, data):
-        for i in range(7):
-            self.pose[i] = data
-
-    def callback_twist(self, data):
-        for i in range(3):
-            self.twist[i] = data
 
     def init_subscribers(self, config_topics):
-        rospy.Subscriber(config_topics['imu'], Imu, self.callback_imu)
-        rospy.Subscriber(config_topics['joint_state'], JointState, self.callback_joint)
-        rospy.Subscriber(config_topics['pose'], PoseWithCovarianceStamped, self.callback_pose)
-        rospy.Subscriber(config_topics['twist'], TwistWithCovarianceStamped, self.callback_twist)
+        self.imu_sub = rospy.Subscriber(config_topics['imu'], Imu, self.callback_imu)
+        self.joint_state_sub = rospy.Subscriber(config_topics['joint_state'], JointState, self.callback_joint)
+        self.odom_sub = rospy.Subscriber(config_topics['odometry'], Odometry, self.odom_callback)
+        #self.imu_sub = rospy.Subscriber(config_topics['twist'], TwistWithCovarianceStamped, self.callback_twist)
+        #self.imu_sub = rospy.Subscriber(config_topics['pose'], PoseWithCovarianceStamped, self.callback_pose)
+
 
     def publish(self, qDes):
         try:
-            pub = rospy.Publisher('/joint_state', JointState, queue_size=10)
+            pub = rospy.Publisher('/command', JointState, queue_size=10)
             rospy.init_node('vel', anonymous=True)
             joint_pub = JointState()
             joint_pub.position = qDes

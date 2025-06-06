@@ -61,7 +61,7 @@ backup:
                       8.60715622e-02, 6.56937354e-02, 8.89956898e-02, 8.91989478e-02,
                       8.37767829e-02, 6.97930652e-02, 1.43025920e-01, 1.22080731e-01,
                       1.49352419e-01, 1.33925065e-01]
-    epsilon: 1e-8
+    epsilon: 1.0e-8
     clip_threshold: 5.0
     default_joint_angles: [0.1, -0.1,  0.1, -0.1,  0.8,  0.8, 1.0,  1.0, -1.5, -1.5, -1.5, -1.5]
     factor: 0.8
@@ -74,8 +74,9 @@ controller:
     real: True
     model: /aliengo_models/xml/aliengo.xml
   topics:
-    imu: /imu
-    joint_state: /joint_state
+    imu: /aliengo/trunk_imu
+    joint_state: /aliengo/joint_state
+    odometry: /aliengo/ground_truth
     pose: /pronto/pose
     twist: /pronto/twist
 
