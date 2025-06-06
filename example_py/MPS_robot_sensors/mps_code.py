@@ -6,8 +6,7 @@ from collections import OrderedDict
 
 def modelData():
     # MuJoCo robot model
-    desc_dir = '/aliengo_models'
-    xml = desc_dir + '/xml/aliengo.xml'
+    xml = '/aliengo_models/xml/aliengo.xml'
     spec = mujoco.MjSpec()
     spec.from_file(xml)
     model_muj = spec.compile()
@@ -19,7 +18,7 @@ def load_backup_nn(config_b, device):
     """
         Load backup policy and change the dictionary labels.
     """
-    PATH = 'backup.pt'
+    PATH = config_b['paths']['checkpoint_path']
     dict_policy = torch.load(PATH, map_location=torch.device(device))['policy']
 
     old_keys = ["net.0.weight", "net.0.bias",      "net.2.weight",      "net.2.bias",
@@ -70,7 +69,7 @@ def labels_state_dict(old_state_dict, old_keys, new_keys):
             new_dict += 1
     return new_state_dict
 
-def computeBackup(q_data, v_data, backup_nn, imu_acc, last_action):
+def computeBackup(pose, twist, joint_pos, joint_vel, backup_nn, imu_acc, last_action):
     """ 
         Use the backup policy to compute the desired joint positions
         to stop the robot.
@@ -85,7 +84,7 @@ def computeBackup(q_data, v_data, backup_nn, imu_acc, last_action):
         that generated them.
     """
     vel_comm = np.zeros(3)
-    pos_order, vel_order = orderState(q_data, v_data)
+    pos_order, vel_order = orderState(np.concatenate((pose, joint_pos)), np.concatenate((twist, joint_vel)))
     state_order = np.concatenate((vel_comm, imu_acc, pos_order, vel_order, last_action))
     state_torch = torch.from_numpy(state_order)
     state_torch = state_torch.to(backup_nn.device, torch.float32)
@@ -153,16 +152,15 @@ class MPS:
                 device = torch.device('cuda')
         self.backup_nn = load_backup_nn(config_b, device)
 
-    def isRecSingle(self, qDes):
+    def isRecSingle(self, qDes, pose, twist, joint_pos, joint_vel):
         iter_mps = 0
 
         data = self.data
         data.qacc_warmstart = 0
         
         # Define initial data for simulation
-        data.qpos =
-        data.qvel =
-        data.qacc = 
+        data.qpos = np.concatenate((pose, joint_pos))
+        data.qvel = np.concatenate((twist, joint_vel))
 
         ## Trunk, hip and knee positions
         z_coordinates = np.array([data.body('trunk').xpos[2], data.body('FL_hip').xpos[2], data.body('FR_hip').xpos[2],
