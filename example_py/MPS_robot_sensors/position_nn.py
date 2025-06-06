@@ -14,7 +14,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStam
 # Neural network and configuration imports
 from config_loader import load_config, load_actor_network
 from utils import scale_axis, quat_rotate_inverse, swap_legs
-#import pygame
+import pygame
 
 import threading
 

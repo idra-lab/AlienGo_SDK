@@ -28,7 +28,7 @@ nominal:
     factor: 0.5
 
   paths:
-    checkpoint_path: ../nn/SoloTerrain.pth # nn/SoloTerrain_lower_frequency.pth
+    checkpoint_path: SoloTerrain.pth # nn/SoloTerrain_lower_frequency.pth
 
 backup:
   robot:

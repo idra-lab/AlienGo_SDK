@@ -1,3 +1,5 @@
+import os
+
 import mujoco
 from mujoco import viewer
 import numpy as np
@@ -7,12 +9,13 @@ class MujocoSim():
     def __init__(self):
 
         self.model, self.data = self.modelData()
-        self.lim_tau
-        self.iter_ctrl
+        self.lim_tau = 40.
+        self.lim_vel = 26.5
+        self.iter_ctrl = 5
 
     def modelData(self):
         # MuJoCo robot model
-        xml = '/aliengo_models/xml/aliengo.xml'
+        xml = os.environ["LOCOSIM_DIR"]+'/robot_control/AlienGo_SDK/example_py/MPS_robot_sensors/aliengo_models/xml/aliengo.xml'
         spec = mujoco.MjSpec()
         spec.from_file(xml)
         model_muj = spec.compile()
