@@ -6,8 +6,8 @@ nominal:
 
   robot:
     default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
-    Kp_n: 100
-    Kd_n: 3
+    Kp_n: 100.0
+    Kd_n: 3.0
     max_pos: [1.22,1.8,-0.65,1.22,1.8,-0.65,1.22,1.8,-0.65,1.22,1.8,-0.65]
     min_pos: [-1.22,0.,-2.78,-1.22,0.,-2.78,-1.22,0.,-2.78,-1.22,0.,-2.78]
     torque_values: [-1.6, 0.0, 0.0]
@@ -34,7 +34,7 @@ backup:
   robot:
     Kp_b: 25
     Kd_b: 0.5
-    torque_limit: 40
+    torque_limit: 40.0
     vel_limit: 26.5
     torque_values: [0.0, 0.0, 0.0]
 
@@ -75,7 +75,7 @@ controller:
     model: /aliengo_models/xml/aliengo.xml
   topics:
     imu: /aliengo/trunk_imu
-    joint_state: /aliengo/joint_state
+    joint_states: /aliengo/joint_states
     odometry: /aliengo/ground_truth
     pose: /pronto/pose
     twist: /pronto/twist

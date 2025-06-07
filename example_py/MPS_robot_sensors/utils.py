@@ -7,7 +7,7 @@ def swap_legs(array):
     Convert from NN convention LF RF LH RH to Pinocchio LF LH RF RH
     """
     array_copy = array.copy()  # Make a copy to avoid modifying the original array
-    order = [0, 1, 2, 6,7,8, 3,4,5,9, 10, 11]
+    order = [0, 1, 2, 6, 7, 8, 3, 4, 5, 9, 10, 11]
     return array_copy[order]
 
 # Quaternion rotation helper

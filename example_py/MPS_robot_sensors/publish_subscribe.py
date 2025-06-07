@@ -79,7 +79,7 @@ class PubSub():
         # We convert from Locosim to Unitree HERE
         # conversion from Unitree to NN will be done where the NN is used
 
-        indices = [0, 1, 2, 6, 7, 8, 3,4,5, 9, 10, 11]
+        indices = [0, 1, 2, 6, 7, 8, 3, 4, 5, 9, 10, 11]
 
         for i in range(12):
             self.joint_pos[i] = data.position[indices[i]]
@@ -88,7 +88,7 @@ class PubSub():
 
     def init_subscribers(self, config_topics):
         self.imu_sub = rospy.Subscriber(config_topics['imu'], Imu, self.callback_imu)
-        self.joint_state_sub = rospy.Subscriber(config_topics['joint_state'], JointState, self.callback_joint)
+        self.joint_state_sub = rospy.Subscriber(config_topics['joint_states'], JointState, self.callback_joint)
         self.odom_sub = rospy.Subscriber(config_topics['odometry'], Odometry, self.odom_callback)
         #self.imu_sub = rospy.Subscriber(config_topics['twist'], TwistWithCovarianceStamped, self.callback_twist)
         #self.imu_sub = rospy.Subscriber(config_topics['pose'], PoseWithCovarianceStamped, self.callback_pose)
