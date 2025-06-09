@@ -10,9 +10,9 @@ robot:
 
 actions:
   bounds:
-    low: -40.0
-    high: 40.0
-    special_high: 40.0
+    low: -35.0
+    high: 35.0
+    special_high: 45.0
 
 scaling:
   body_ang_vel: 0.25
@@ -23,4 +23,4 @@ scaling:
   actions: 1.0
 
 paths:
-  checkpoint_path: nominal.pth
+  checkpoint_path: nominal.pth # nn/SoloTerrain_lower_frequency.pth

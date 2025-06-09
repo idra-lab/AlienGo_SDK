@@ -122,6 +122,8 @@ def compute_observation(scaling_factors):
     imu_quat = pubSub.imu_quat
     joint_pos = pubSub.joint_pos
     joint_vel = pubSub.joint_vel
+
+    print
     
     # Add if the controller is not used
     commands = np.array([0,0,0]) # The stopping condition here is not evaluated
