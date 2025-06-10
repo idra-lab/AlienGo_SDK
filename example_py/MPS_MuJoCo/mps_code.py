@@ -13,9 +13,7 @@ import time
 def modelData():
     # MuJoCo robot model
     xml = '../MPS_robot_sensors/aliengo_models/xml/aliengo.xml'
-    spec = mujoco.MjSpec()
-    spec.from_file(xml)
-    model_muj = spec.compile()
+    model_muj = mujoco.MjModel.from_xml_path(xml)
     data_muj = mujoco.MjData(model_muj)
 
     return model_muj, data_muj

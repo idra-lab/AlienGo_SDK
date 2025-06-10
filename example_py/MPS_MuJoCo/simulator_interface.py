@@ -20,9 +20,7 @@ class MujocoSim():
     def modelData(self):
         # MuJoCo robot model
         xml = '../MPS_robot_sensors/aliengo_models/xml/aliengo.xml'
-        spec = mujoco.MjSpec()
-        spec.from_file(xml)
-        model_muj = spec.compile()
+        model_muj = mujoco.MjModel.from_xml_path(xml)
         data_muj = mujoco.MjData(model_muj)
         th_q0 = 0.75
         self.q0 = np.array([0, 0,  0.07,
@@ -31,7 +29,8 @@ class MujocoSim():
                              0.7, 1.2, -2.7,
                             -0.7, 1.2, -2.7,   
                              0.7, 1.2, -2.7])                   # RR
-        
+        print('data_muj.qpos',data_muj.qpos)
+        print('data_muj.qvel',data_muj.qvel)
         data_muj.qpos = self.q0
         data_muj.qvel = np.zeros(18)
         mujoco.mj_forward(model_muj,data_muj)
