@@ -6,6 +6,7 @@ import math
 import numpy as np
 import torch
 import mps_code
+import copy
 import rospy
 import publish_subscribe
 from sensor_msgs.msg import Imu, JointState
@@ -17,6 +18,9 @@ from utils import scale_axis, quat_rotate_inverse, swap_legs
 import pygame
 
 import threading
+
+
+
 
 # Remove if controller is not used 
 # Initialize pygame and the joystick module
@@ -39,15 +43,25 @@ config = load_config(config_path)
 actor_network = load_actor_network(config['nominal'],config['nominal']['paths']['checkpoint_path'])
 scaling_factors = config['nominal']['scaling']
 default_joint_angles = config['nominal']['robot']['default_joint_angles']
-Kp_n = config['nominal']['robot']['Kp_n']
-Kd_n = config['nominal']['robot']['Kd_n']
+
 max_pos = config['nominal']['robot']['max_pos']
 min_pos = config['nominal']['robot']['min_pos']
-torque_values = config['nominal']['robot']['torque_values']*4
+torque_values_n = config['nominal']['robot']['torque_values']
 scaling_qdes = scaling_factors['factor']
 
 # Backup policy
 torque_values_b = config['backup']['robot']['torque_values']
+
+imu_acc = np.zeros(3)
+imu_quat = np.zeros(4)
+imu_gyro = np.zeros(3)
+joint_pos = np.zeros(12)
+joint_vel = np.zeros(12)
+pose = np.zeros(7)
+twist = np.zeros(6)
+
+
+
 
 def get_commands(): 
     """
@@ -118,24 +132,15 @@ def compute_observation(scaling_factors):
     """
     # Remove if the controller is not used
     #commands = get_commands() # The stopping condition here is not evaluated
-    imu_gyro = pubSub.imu_gyro
-    imu_quat = pubSub.imu_quat
-    joint_pos = pubSub.joint_pos
-    joint_vel = pubSub.joint_vel
-
-    print
     
     # Add if the controller is not used
-    commands = np.array([0,0,0]) # The stopping condition here is not evaluated
+    commands = np.array([0.,0.,0.]) # The stopping condition here is not evaluated
 
-    #imu = state.imu
-    #body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
     body_quat = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
-    #body_vel = np.array([imu.gyroscope[0], imu.gyroscope[1], imu.gyroscope[2]])
-    body_vel = imu_gyro
-    joint_angles1 = joint_pos#[state.motorState[i].q for i in range(12)]
+    body_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
+    joint_angles1 = [joint_pos[i] for i in range(12)]
     joint_angles = swap_legs(joint_angles1)
-    joint_velocities1 = joint_vel#[state.motorState[i].dq for i in range(12)]
+    joint_velocities1 = [joint_vel[i] for i in range(12)]
     joint_velocities = swap_legs(joint_velocities1)
 
     # Gravity vector in body frame
@@ -159,7 +164,7 @@ def compute_observation(scaling_factors):
     # Concatenate into a single observation vector
     return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles, scaled_joint_velocities, scaled_actions))
 
-def compute_actions(imu_gyro, imu_quat, joint_pos, joint_vel, scaling_factors):
+def compute_actions(scaling_factors):
 
     """
     Inference on the NN to retrive actions from observations.
@@ -173,8 +178,8 @@ def compute_actions(imu_gyro, imu_quat, joint_pos, joint_vel, scaling_factors):
     print('joint_vel',joint_vel)'''
     global latest_actions, previous_actions, stop_threads
     while not stop_threads:
-        print('pubSub.imu_quat',pubSub.imu_quat)
-        print('imu_quat',imu_quat)
+        '''print('pubSub.imu_quat',pubSub.imu_quat)
+        print('imu_quat',imu_quat)'''
         '''print('imu_gyro',imu_gyro)
         print('imu_quat',imu_quat)
         print('joint_pos',joint_pos)
@@ -197,7 +202,7 @@ def compute_actions(imu_gyro, imu_quat, joint_pos, joint_vel, scaling_factors):
         with lock:
             previous_actions[:] = latest_actions  # Store current actions as previous
             latest_actions[:] = new_actions  # Update latest actions
-    
+
         """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
 
 def jointLinearInterpolation(initPos, targetPos, rate):
@@ -230,7 +235,9 @@ def check_safety_stops(imu_quat):
 if __name__ == '__main__':
     rospy.init_node('communicate_aliengo')
     pubSub = publish_subscribe.PubSub()
+    pubSub.init_publisher()
     pubSub.init_subscribers(config['controller']['topics'])
+    
 
     # Initialize as recoverable
     is_rec = True
@@ -257,7 +264,8 @@ if __name__ == '__main__':
             0, 0, 0]
     
     rate_count = 0
-
+    Kp_n = config['nominal']['robot']['Kp_n']
+    Kd_n = config['nominal']['robot']['Kd_n']
     # PD tuning parameters
     Kp = [Kp_n, Kp_n, Kp_n]
     Kd = [Kd_n, Kd_n, Kd_n]
@@ -267,19 +275,19 @@ if __name__ == '__main__':
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     # Decimation changed to 5 to have a 100 Hz main loop, like in the simulations
     decimation = 5
-    #mps = mps_code.MPS(decimation, max_pos, min_pos, torque_values, Kp_n, Kd_n, config['backup'])
-    #Kp_b = mps.Kp_b
-    #Kd_b = mps.Kd_b
-
+    mps = mps_code.MPS(decimation, max_pos, min_pos, torque_values_n, Kp_n, Kd_n, scaling_qdes, default_joint_angles, scaling_factors)
+    torque_values = np.zeros(12)
     #state = sdk.LowState()
 
     motiontime = 0
 
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
-    imu_gyro = np.zeros(3)
     # Start the inference thread
-    threading.Thread(target=compute_actions, args=(pubSub.imu_gyro, pubSub.imu_quat, pubSub.joint_pos, pubSub.joint_vel, scaling_factors), daemon=True).start()
-
+    threading.Thread(target=compute_actions, args=(scaling_factors,), daemon=True).start()
+    while pubSub.cmd_pub.get_num_connections() < 1:
+            print('Waiting for subscribers')
+    time.sleep(10)
+    pubSub.publish(np.zeros(12), np.zeros(12), np.zeros(12))
     while not rospy.is_shutdown():
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
@@ -287,7 +295,13 @@ if __name__ == '__main__':
         """
         step_start = time.time()
         motiontime += 1
-    
+        print('++++++++++++++++ before wait in pos')
+
+        imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist = pubSub.wait_for_all_messages()
+        print('++++++++++++++++ after wait in pos')
+
+        #print('imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist')
+        #print(imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist)
         '''udp.Recv()
         udp.GetRecv(state)'''
 
@@ -301,29 +315,34 @@ if __name__ == '__main__':
             exit()'''
 
         # First, record initial position
-        '''if( motiontime >= 0 and motiontime < 1*(1/dt)):
+        #'''
+        if( motiontime >= 0 and motiontime < 1*(1/dt)):
+            print('loop A')
             # Extract qInit values using dictionary keys
             #qInit = [state_robot.motorState[d[key]].q for key in d]
-            qInit = [pubSub.joint_pos[i] for i in range(12)]
+            qInit = [joint_pos[i] for i in range(12)]
 
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
+            torque_values = torque_values_n
+            print('loop B')
             rate_count += 1
             rate = rate_count / (5*(1/dt))
 
             # Here I don't switch the legs because the default joint angles are simmetric
             #qDes = [jointLinearInterpolation(qInit[i], default_joint_angles[i], rate) for i in range(12)]
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
-            qDes = np.clip(qDes, min_pos, max_pos)'''
+            qDes = np.clip(qDes, min_pos, max_pos)#'''
 
-        if( motiontime >= 0 and is_rec):
+        elif( motiontime >= 7*(1/dt)):# and is_rec):
+            print('loop C')
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
                 inference_ready.set()
 
-            # Get the latest available actions
-            with lock:  
-                current_actions = np.copy(latest_actions)
+                # Get the latest available actions
+                with lock:  
+                    current_actions = np.copy(latest_actions)
                 
             qDes = scaling_qdes * current_actions + np.array(default_joint_angles)
 
@@ -331,17 +350,17 @@ if __name__ == '__main__':
             qDes = np.clip(qDes, min_pos, max_pos)
 
             # MPS check
-            '''is_rec, iter_mps = mps.isRecSingle(qDes, pubSub.pose, pubSub.twist, pubSub.joint_pos, pubSub.joint_vel)
-            if not is_rec:
-                # Change gains and torque values to start using the backup policy
-                Kp = [Kp_b, Kp_b, Kp_b]
-                Kd = [Kd_b, Kd_b, Kd_b]
-                torque_values = torque_values_b
-                last_action = np.zeros(12)'''
-
+          #  start_time = time.time()
+            if motiontime % decimation == 0:
+               #'''
+               #start_time = time.time()
+               is_rec, iter_mps = mps.is_rec_single(qDes, pose, twist, joint_pos, joint_vel, copy.deepcopy(actor_network), previous_actions, current_actions)
+               is_rec = True#'''
+               #print('time', time.time() - start_time)
+               #time.sleep(0.01)
+            #   print('mps')
         '''elif( motiontime >= 7*(1/dt) and not is_rec):
             # Use backup policy if at some point the MPS detects it is not possible to stop the robot
-            #imu = state_robot.imu
             body_acc = np.array([pubSub.imu_acc[0], -pubSub.imu_acc[1], -pubSub.imu_acc[2]])
             qDes, last_action = mps_code.computeBackup(pubSub.pose, pubSub.twist, pubSub.joint_pos, pubSub.joint_vel, mps.backup_nn, body_acc, last_action)'''
             
@@ -367,13 +386,15 @@ if __name__ == '__main__':
         udp.SetSend(cmd)
         udp.Send()'''
         
-
-        pubSub.publish(qDes, np.zeros(12), torque_values)
-
+        time.sleep(0.02)
+        print('before publish')
+        pubSub.publish(qDes, np.zeros(12), torque_values*4)
+        print('motiontime',motiontime)
         # Temporize the loop to maintain the desired frequency
         time_until_next_step = dt - (time.time() - step_start)
-        if time_until_next_step > 0:
-            rospy.sleep(time_until_next_step)
+        print('time_until_next_step',time_until_next_step)
+        #if time_until_next_step > 0:
+        #    rospy.sleep(time_until_next_step)
     rospy.spin()
         # elapsed_time = time.time() - step_start  # Time taken for the loop iteration
         # print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)")

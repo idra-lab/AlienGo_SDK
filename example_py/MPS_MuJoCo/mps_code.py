@@ -8,10 +8,11 @@ from utils import quat_rotate_inverse
 import matplotlib
 from matplotlib.path import Path
 from shapely.geometry import Polygon
+import time
 
 def modelData():
     # MuJoCo robot model
-    xml = os.environ["LOCOSIM_DIR"] + '/robot_control/AlienGo_SDK/example_py/MPS_robot_sensors/aliengo_models/xml/aliengo.xml'
+    xml = '../MPS_robot_sensors/aliengo_models/xml/aliengo.xml'
     spec = mujoco.MjSpec()
     spec.from_file(xml)
     model_muj = spec.compile()
@@ -127,7 +128,8 @@ def orderBackup(pos):
 class MPS:
     def __init__(self, decimation, max_pos, min_pos, torque_values, Kp_n, Kd_n, scaling_qdes, default_joint_angles, scaling_factors):
         # Compute the number of MuJoCo iterations to use each network output 
-        self.iter_ctrl = 5
+        self.iter_ctrl = 5#decimation
+        
 
         # Parameters for the nominal policy
         self.max_pos = max_pos
@@ -157,7 +159,11 @@ class MPS:
 
     def is_rec_single(self, qDes, pose, twist, joint_pos, joint_vel, sim_nn, previous_actions, current_actions):
         iter_mps = 0
+       # time_while = 0
+        times_checks = 0
+        time_nn = 0
         
+        start_check = time.time()
         # Define initial data for simulation
         self.data.qpos = np.concatenate((pose, self.swap_legs(joint_pos)))
         self.data.qvel = np.concatenate((twist, self.swap_legs(joint_vel)))
@@ -178,7 +184,8 @@ class MPS:
         j = 0
         q_muj = self.data.qpos.copy()
         v_muj = self.data.qvel.copy()
-      
+        times_checks += (time.time()-start_check)
+        #start_while = time.time()
         while j < self.iter_ctrl:
             u_nominal = self.Kd_n * (- v_muj[6:]) + self.Kp_n * (qDes - q_muj[7:]) + self.torque_values
             self.data.ctrl = np.clip(u_nominal, -self.lim_tau, self.lim_tau)
@@ -186,9 +193,10 @@ class MPS:
             mujoco.mj_step(self.model, self.data)
             q_muj = self.data.qpos.copy()
             v_muj = self.data.qvel.copy()
-
+        #time_while += (time.time()-start_while)
         nominal = False
         for i in range(0, self.N_mps): ##simulated steps
+            start_check = time.time()
             z_coordinates = np.array([self.data.body('trunk').xpos[2], self.data.body('FL_hip').xpos[2], self.data.body('FR_hip').xpos[2],
                                       self.data.body('RL_hip').xpos[2], self.data.body('RR_hip').xpos[2]])
             data_compare = np.array([self.data.qpos[7], self.data.qpos[9], self.data.qpos[10], self.data.qpos[12],
@@ -201,6 +209,7 @@ class MPS:
                 [self.data.geom(self.feet_geom[0]).xpos[2], self.data.geom(self.feet_geom[1]).xpos[2],
                  self.data.geom(self.feet_geom[2]).xpos[2],
                  self.data.geom(self.feet_geom[3]).xpos[2]]) < self.contact_height)
+
             if phase_all:  # Check that the four feet are in contact with the floor
                 for k in self.feet_geom:
                     xy_coords.append([self.data.geom(k).xpos[0], self.data.geom(k).xpos[1]])
@@ -211,17 +220,23 @@ class MPS:
         
             if np.any(z_coordinates < self.X_safe) or np.any(np.abs(self.data.qvel[6:]) > self.lim_vel) or check_pos: ## x is not in X_safe
                 return False, iter_mps
+            times_checks += (time.time()-start_check)
 
+            start_nn = time.time()
             ## Simulate x with pi_rec
-            new_actions1 = self.compute_actions(self.data, self.scaling_factors, previous_actions, sim_nn)
+            new_actions1 = self.compute_actions(previous_actions, sim_nn)
 
             previous_actions = current_actions
             current_actions = self.swap_legs(new_actions1)
             qDes = self.scaling_qdes * current_actions + np.array(self.default_joint_angles)
             qDes = np.clip(qDes, self.min_pos, self.max_pos)
             iter_mps += 1
-            
+            time_nn += (time.time()-start_nn)
+            print('start_nn', time_nn)
             j = 0
+            
+
+            #start_while = time.time()
             while j < self.iter_ctrl:
                 j += 1
                 u_nominal = self.Kd_n * (- v_muj[6:]) + self.Kp_n * (qDes - q_muj[7:]) + self.torque_values
@@ -229,8 +244,8 @@ class MPS:
                 mujoco.mj_step(self.model, self.data)
                 q_muj = self.data.qpos.copy()
                 v_muj = self.data.qvel.copy()
-
-
+            #print('time_while',time_while)
+            print('times_checks',times_checks)
         return False, iter_mps
 
     def swap_legs(self, array):
@@ -245,21 +260,21 @@ class MPS:
         order = [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]
         return array_copy[order]
 
-    def compute_observation(self, data_muj, scaling_factors, prev_actions1):
+    def compute_observation(self, prev_actions1):
         """
         Compute the observation vector from the robot's state.
         """
-        imu_quat = data_muj.sensor('Body_Quat').data.copy()
-        imu_gyro = data_muj.sensor('Body_Gyro').data.copy()
+        imu_quat = self.data.sensor('Body_Quat').data.copy()
+        imu_gyro = self.data.sensor('Body_Gyro').data.copy()
 
-        commands = np.array([-0.35, -0.1, 0.])
+        commands = np.array([-0.45, -0.02, 0.])
 
         body_quat = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
         body_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
 
-        joint_angles1 = data_muj.qpos.copy()[7:]
+        joint_angles1 = self.data.qpos.copy()[7:]
         joint_angles = self.swap_legs(joint_angles1)
-        joint_velocities1 = data_muj.qvel.copy()[6:]
+        joint_velocities1 = self.data.qvel.copy()[6:]
         joint_velocities = self.swap_legs(joint_velocities1)
 
         # Gravity vector in body frame
@@ -271,20 +286,20 @@ class MPS:
         prev_actions = self.swap_legs(prev_actions1)
 
         # Scale observations
-        scaled_body_vel = body_vel * scaling_factors['body_ang_vel']
-        scaled_commands = commands[:2] * scaling_factors['commands']
-        scaled_commands = np.append(scaled_commands, commands[2] * scaling_factors['body_ang_vel'])
-        scaled_gravity_body = gravity_body * scaling_factors['gravity_body']
-        scaled_joint_angles = np.array(joint_angles) * scaling_factors['joint_angles']
-        scaled_joint_velocities = np.array(joint_velocities) * scaling_factors['joint_velocities']
-        scaled_actions = prev_actions * scaling_factors['actions']
+        scaled_body_vel = body_vel * self.scaling_factors['body_ang_vel']
+        scaled_commands = commands[:2] * self.scaling_factors['commands']
+        scaled_commands = np.append(scaled_commands, commands[2] * self.scaling_factors['body_ang_vel'])
+        scaled_gravity_body = gravity_body * self.scaling_factors['gravity_body']
+        scaled_joint_angles = np.array(joint_angles) * self.scaling_factors['joint_angles']
+        scaled_joint_velocities = np.array(joint_velocities) * self.scaling_factors['joint_velocities']
+        scaled_actions = prev_actions * self.scaling_factors['actions']
 
         # Concatenate into a single observation vector
         return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles,
                                scaled_joint_velocities, scaled_actions))
 
-    def compute_actions(self, data_muj, scaling_factors, previous_actions, sim_nn):
-        obs = self.compute_observation(data_muj, scaling_factors, previous_actions)
+    def compute_actions(self, previous_actions, sim_nn):
+        obs = self.compute_observation(previous_actions)
         obs_tensor = torch.tensor(obs, dtype=torch.float32)
         obs_normalized = sim_nn.norm_obs(obs_tensor)
         with torch.no_grad():

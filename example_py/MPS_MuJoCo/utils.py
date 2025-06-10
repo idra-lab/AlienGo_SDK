@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 def swap_legs(array):
     """
@@ -8,7 +9,7 @@ def swap_legs(array):
     """
     array_copy = array.copy()  # Make a copy to avoid modifying the original array
     order = [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]
-    return array_copy[order]
+    return np.array(array_copy)[order]
 
 # Quaternion rotation helper
 def quat_rotate_inverse(q, v):
