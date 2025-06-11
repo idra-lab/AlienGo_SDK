@@ -23,7 +23,6 @@ class PubSub():
 
 
     def callback_imu(self, msg):
-        print('Received IMU')
         with self.condition:
           # Timestamp
           self.imu_time = msg.header.stamp.to_sec()
@@ -56,7 +55,6 @@ class PubSub():
 
 
     def odom_callback(self, msg):
-        print('Received ODOM')
         with self.condition:
           # Timestamp
           self.odom_time = msg.header.stamp.to_sec()
@@ -87,7 +85,6 @@ class PubSub():
           self.condition.notify_all()
 
     def callback_joint(self, data):
-      print('Received joint')
         # Ordered as in MuJoCo
       with self.condition:
         for i in range(12):
@@ -130,6 +127,5 @@ class PubSub():
             self.joint_pub.velocity = qvel
             self.joint_pub.effort = eff
             self.cmd_pub.publish(self.joint_pub)
-            print('Published control')
         except rospy.ROSInterruptException:
             pass

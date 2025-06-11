@@ -2,12 +2,17 @@ import yaml
 import torch
 import torch.nn as nn
 from rl_games.algos_torch.running_mean_std import RunningMeanStd
+import pickle
 
 
 # Function to load YAML configuration
 def load_config(file_path):
     with open(file_path, 'r') as file:
         return yaml.safe_load(file)
+    
+def load_value(file_path):
+    with open(file_path, 'rb') as f:
+        return pickle.load(f)
 
 
 # Actor Network Class

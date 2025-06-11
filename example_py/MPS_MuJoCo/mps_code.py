@@ -10,6 +10,48 @@ from matplotlib.path import Path
 from shapely.geometry import Polygon
 import time
 
+# Value function network load
+import flax.linen as nn_flax
+import pickle
+import jax
+from jax import numpy as jnp
+import os
+from functools import partial
+
+os.environ["XLA_FLAGS"] = os.environ.get("XLA_FLAGS", "") + " --xla_gpu_triton_gemm_any=True"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
+
+class CriticNetwork(nn_flax.Module):
+    @nn_flax.compact
+    def __call__(self, x):
+        x = nn_flax.Dense(512)(x)
+        x = nn_flax.LayerNorm()(x)
+        x = nn_flax.elu(x)
+        x = nn_flax.Dense(256)(x)
+        x = nn_flax.LayerNorm()(x)
+        x = nn_flax.elu(x)
+        x = nn_flax.Dense(128)(x)
+        x = nn_flax.LayerNorm()(x)
+        x = nn_flax.elu(x)
+        # Output initialized to 1 (probability of survival)
+        x = nn_flax.Dense(1, kernel_init=nn_flax.initializers.zeros, bias_init=nn_flax.initializers.ones)(x)
+        # x = nn.Dense(1)(x)
+        return x.squeeze(-1)
+    
+class CriticEvaluator:
+    def __init__(self, model, params):
+        self.apply_fn = model.apply
+        self.params = params
+
+def normalize_inputs(obss, mean, std):
+    return (obss - mean) / (std + 1e-8)
+
+#@jax.jit
+@partial(jax.jit, static_argnames=['critic_model'])
+def critic_inference(critic_model, params, obs):
+    return critic_model.apply(params, obs)
+
 def modelData():
     # MuJoCo robot model
     xml = '../MPS_robot_sensors/aliengo_models/xml/aliengo.xml'
@@ -124,10 +166,9 @@ def orderBackup(pos):
     return pos[order_pos].detach().cpu().numpy()
 
 class MPS:
-    def __init__(self, decimation, max_pos, min_pos, torque_values, Kp_n, Kd_n, scaling_qdes, default_joint_angles, scaling_factors):
-        # Compute the number of MuJoCo iterations to use each network output 
+    def __init__(self, decimation, max_pos, min_pos, torque_values, Kp_n, Kd_n, scaling_qdes, default_joint_angles, scaling_factors, config_value):
+        # Compute the number of MuJoCo iterations to use each network output        
         self.iter_ctrl = 5#decimation
-        
 
         # Parameters for the nominal policy
         self.max_pos = max_pos
@@ -138,6 +179,7 @@ class MPS:
         self.scaling_qdes = scaling_qdes
         self.default_joint_angles = default_joint_angles
         self.scaling_factors = scaling_factors
+        self.data_value = config_value
 
         # Limits and conditions for the MPS
         self.jmax_compare = np.array([max_pos[0], max_pos[2], max_pos[3], max_pos[5], max_pos[6], max_pos[8],
@@ -145,82 +187,48 @@ class MPS:
         self.jmin_compare = np.array([min_pos[0], min_pos[2], min_pos[3], min_pos[5], min_pos[6], min_pos[8],
                                       min_pos[9], min_pos[11]])
         self.X_safe = 0.1 # Minimum height not to consider a fall for trunk and hips
-        self.N_mps = 50 # Number of MPS simulation steps to decide which policy to use
+        self.N_mps = 5 # Number of MPS simulation steps to decide which policy to use
         self.X_inv = 10e-2 # Maximum velocity to consider the robot has stopped
         self.lim_tau = 40
         self.lim_vel = 26.5
         self.contact_height = 0.03
         self.feet_geom = [12, 20, 36, 28]
+        self.grav_tens = torch.tensor([[0., 0., -1.]], device='cuda:0', dtype=torch.double)
 
         # Model robot using MuJoCo for the MPS loop
         self.model, self.data = modelData()
+        self.setup_value_function()
+
+    def setup_value_function(self):
+        # Setup per la critic network
+        self.critic_model = CriticNetwork()
+        self.params, self.mean, self.std = self.data_value['model_params'], self.data_value['mean'], self.data_value['std']
+
+        # Creiamo l'oggetto per eseguire la valutazione della critic network
+        self.critic_network = CriticEvaluator(self.critic_model, self.params)
 
     def is_rec_single(self, qDes, pose, twist, joint_pos, joint_vel, sim_nn, previous_actions, current_actions):
-        iter_mps = 0
-       # time_while = 0
-        times_checks = 0
-        time_nn = 0
-        
-        start_check = time.time()
+        value_fnc_result = np.zeros(self.N_mps+1)
+
         # Define initial data for simulation
-        self.data.qpos = np.concatenate((pose, self.swap_legs(joint_pos)))
-        self.data.qvel = np.concatenate((twist, self.swap_legs(joint_vel)))
+        self.data.qpos = np.concatenate((pose, joint_pos))
+        self.data.qvel = np.concatenate((twist, joint_vel))
         mujoco.mj_forward(self.model, self.data)
 
-        ## Trunk, hip and knee positions
-        z_coordinates = np.array([self.data.body('trunk').xpos[2], self.data.body('FL_hip').xpos[2], self.data.body('FR_hip').xpos[2],
-                                self.data.body('RL_hip').xpos[2], self.data.body('RR_hip').xpos[2]])
-        
-        data_compare = np.array([self.data.qpos[7], self.data.qpos[9], self.data.qpos[10], self.data.qpos[12],
-                                 self.data.qpos[13], self.data.qpos[15], self.data.qpos[16], self.data.qpos[18]])
-        check_pos = (np.any(data_compare > self.jmax_compare) or np.any(data_compare < self.jmin_compare))
-
-        if np.any(z_coordinates < self.X_safe) or np.any(np.abs(self.data.qvel[6:]) > self.lim_vel) or check_pos: ## x is not in X_safe
-            return False, iter_mps
-        
         ## Simulate x with pi_hat
-        j = 0
         q_muj = self.data.qpos.copy()
         v_muj = self.data.qvel.copy()
-        times_checks += (time.time()-start_check)
-        #start_while = time.time()
-        while j < self.iter_ctrl:
+        for j in range(self.iter_ctrl):
             u_nominal = self.Kd_n * (- v_muj[6:]) + self.Kp_n * (qDes - q_muj[7:]) + self.torque_values
             self.data.ctrl = np.clip(u_nominal, -self.lim_tau, self.lim_tau)
             j += 1
             mujoco.mj_step(self.model, self.data)
             q_muj = self.data.qpos.copy()
             v_muj = self.data.qvel.copy()
-        #time_while += (time.time()-start_while)
         nominal = False
         for i in range(0, self.N_mps): ##simulated steps
-            start_check = time.time()
-            z_coordinates = np.array([self.data.body('trunk').xpos[2], self.data.body('FL_hip').xpos[2], self.data.body('FR_hip').xpos[2],
-                                      self.data.body('RL_hip').xpos[2], self.data.body('RR_hip').xpos[2]])
-            data_compare = np.array([self.data.qpos[7], self.data.qpos[9], self.data.qpos[10], self.data.qpos[12],
-                                     self.data.qpos[13], self.data.qpos[15], self.data.qpos[16], self.data.qpos[18]])
-            check_pos = (np.any(data_compare > self.jmax_compare) or np.any(data_compare < self.jmin_compare))
+            value_fnc_result[i] = self.computeValueFnc()
 
-            xy_coords = []
-
-            phase_all = np.all(np.array(
-                [self.data.geom(self.feet_geom[0]).xpos[2], self.data.geom(self.feet_geom[1]).xpos[2],
-                 self.data.geom(self.feet_geom[2]).xpos[2],
-                 self.data.geom(self.feet_geom[3]).xpos[2]]) < self.contact_height)
-
-            if phase_all:  # Check that the four feet are in contact with the floor
-                for k in self.feet_geom:
-                    xy_coords.append([self.data.geom(k).xpos[0], self.data.geom(k).xpos[1]])
-
-                if self.capture_point_check(self.data, xy_coords):
-                    return True, iter_mps
-
-        
-            if np.any(z_coordinates < self.X_safe) or np.any(np.abs(self.data.qvel[6:]) > self.lim_vel) or check_pos: ## x is not in X_safe
-                return False, iter_mps
-            times_checks += (time.time()-start_check)
-
-            start_nn = time.time()
             ## Simulate x with pi_rec
             new_actions1 = self.compute_actions(previous_actions, sim_nn)
 
@@ -228,23 +236,23 @@ class MPS:
             current_actions = self.swap_legs(new_actions1)
             qDes = self.scaling_qdes * current_actions + np.array(self.default_joint_angles)
             qDes = np.clip(qDes, self.min_pos, self.max_pos)
-            iter_mps += 1
-            time_nn += (time.time()-start_nn)
-            print('start_nn', time_nn)
-            j = 0
             
-
-            #start_while = time.time()
-            while j < self.iter_ctrl:
-                j += 1
+            for j in range(self.iter_ctrl):
                 u_nominal = self.Kd_n * (- v_muj[6:]) + self.Kp_n * (qDes - q_muj[7:]) + self.torque_values
                 self.data.ctrl = np.clip(u_nominal, -self.lim_tau, self.lim_tau)
                 mujoco.mj_step(self.model, self.data)
                 q_muj = self.data.qpos.copy()
                 v_muj = self.data.qvel.copy()
-            #print('time_while',time_while)
-            print('times_checks',times_checks)
-        return False, iter_mps
+
+        '''if value_fnc_result[-1] == 1:
+            return True
+        else:
+            return False'''
+        value_fnc_result[-1] = self.computeValueFnc()
+        if np.any(value_fnc_result == 0):
+            return False
+        else:
+            return True
 
     def swap_legs(self, array):
         """
@@ -276,18 +284,15 @@ class MPS:
         joint_velocities = self.swap_legs(joint_velocities1)
 
         # Gravity vector in body frame
-        gravity_body = quat_rotate_inverse(
-            torch.tensor(body_quat, dtype=torch.float32).unsqueeze(0),
-            torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32)
-        ).squeeze().numpy()
-
+        body_quat_tensor = torch.tensor(body_quat, device='cuda:0', dtype=torch.double).unsqueeze(0)
+        gravity_body = quat_rotate_inverse(body_quat_tensor, self.grav_tens)
         prev_actions = self.swap_legs(prev_actions1)
 
         # Scale observations
         scaled_body_vel = body_vel * self.scaling_factors['body_ang_vel']
         scaled_commands = commands[:2] * self.scaling_factors['commands']
         scaled_commands = np.append(scaled_commands, commands[2] * self.scaling_factors['body_ang_vel'])
-        scaled_gravity_body = gravity_body * self.scaling_factors['gravity_body']
+        scaled_gravity_body = gravity_body[0].cpu() * self.scaling_factors['gravity_body']
         scaled_joint_angles = np.array(joint_angles) * self.scaling_factors['joint_angles']
         scaled_joint_velocities = np.array(joint_velocities) * self.scaling_factors['joint_velocities']
         scaled_actions = prev_actions * self.scaling_factors['actions']
@@ -304,12 +309,12 @@ class MPS:
             new_actions1 = sim_nn(obs_normalized).numpy()
         return new_actions1
 
-    def capture_point_check(self, data_muj, xy_coords, factor=0.7):
+    def capture_point_check(self, xy_coords, factor=0.7):
         # Compute the capture point coordinates
-        com_coordinates = data_muj.body('trunk').subtree_com
-        mujoco.mj_subtreeVel(data_muj.model, data_muj)
-        com_velocities = data_muj.body('trunk').subtree_linvel
-        omega = np.sqrt(abs(data_muj.model.opt.gravity[2]) / com_coordinates[2])
+        com_coordinates = self.data.body('trunk').subtree_com
+        mujoco.mj_subtreeVel(self.model, self.data)
+        com_velocities = self.data.body('trunk').subtree_linvel
+        omega = np.sqrt(abs(self.model.opt.gravity[2]) / com_coordinates[2])
         cp_x = com_coordinates[0] + (com_velocities[0] / omega)
         cp_y = com_coordinates[1] + (com_velocities[1] / omega)
 
@@ -324,3 +329,39 @@ class MPS:
         hull_path = hull_path.transformed(matplotlib.transforms.Affine2D().translate(translate_x, translate_y))
 
         return hull_path.contains_point((cp_x, cp_y))
+    
+    def computeValueFnc(self):
+        body_quat_reordered = np.array([self.data.qpos[4], self.data.qpos[5], self.data.qpos[6], self.data.qpos[3]])
+        tensor_quat = torch.tensor(body_quat_reordered, device='cuda:0', dtype=torch.double).unsqueeze(0)
+        gravity_body = quat_rotate_inverse(tensor_quat, self.grav_tens)[0].cpu().numpy()
+        body_lin_vel_global = self.data.qvel[:3].copy()
+        body_ang_vel_global = self.data.qvel[3:6].copy()
+        body_lin_vel_tensor = torch.tensor(body_lin_vel_global[None], device='cuda:0', dtype=torch.double)
+        body_lin_vel_local = quat_rotate_inverse(tensor_quat, body_lin_vel_tensor)[0].cpu().numpy()
+        vel_tp1 = np.concatenate([body_lin_vel_local, body_ang_vel_global])
+        joint_pos_tp1 = self.swap_legs(self.data.qpos[7:].copy())
+        joint_vel_tp1 = self.swap_legs(self.data.qvel[6:].copy())
+        z_after = self.data.qpos[2]
+
+        obs_flax_np = np.concatenate((
+            np.array([z_after], dtype=np.float32),
+            gravity_body.astype(np.float32),
+            vel_tp1.astype(np.float32),
+            joint_pos_tp1.astype(np.float32),
+            joint_vel_tp1.astype(np.float32)
+        ))
+
+        obs_flax = jnp.array(obs_flax_np)  # <-- qui è jax.numpy array
+
+        # Normalize the observation
+        obs_flax = normalize_inputs(obs_flax, self.mean, self.std)
+
+        # V_safe = critic_network.apply_fn(critic_network.params, obs_flax)
+        V_safe = critic_inference(self.critic_model, self.critic_network.params, obs_flax)
+
+        if V_safe > 0.9:
+            #print(f"\033[92mV_safe: {V_safe:.4f}\033[0m")
+            return 1
+        else:
+            #print(f"\033[91mV_safe: {V_safe:.4f}\033[0m")
+            return 0

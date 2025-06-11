@@ -13,7 +13,7 @@ from sensor_msgs.msg import Imu, JointState
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
 
 # Neural network and configuration imports
-from config_loader import load_config, load_actor_network
+from config_loader import load_config, load_actor_network, load_value
 from utils import scale_axis, quat_rotate_inverse, swap_legs
 import pygame
 
@@ -60,7 +60,9 @@ joint_vel = np.zeros(12)
 pose = np.zeros(7)
 twist = np.zeros(6)
 
-
+# Value function
+config_path_value = '../nn/VF_safe_MPC_small.pkl'
+config_value = load_value(config_path_value)
 
 
 def get_commands(): 
@@ -120,10 +122,11 @@ def get_safety_button():
 lock = threading.Lock()
 latest_actions = np.zeros(12)  # Store the latest actions safely across threads
 previous_actions = np.zeros(12)  # Store the previous actions
+current_actions = np.zeros(12)
 inference_ready = threading.Event()  # Event to signal new inference results
 stop_threads = False  # Flag to stop threads gracefully
 
-def compute_observation(scaling_factors):
+def compute_observation(scaling_factors, prev_actions1, nominal):
     """
     Compute the observation vector from the robot's state.
     Legs are swapped to match the order of the neural network input.
@@ -134,7 +137,10 @@ def compute_observation(scaling_factors):
     #commands = get_commands() # The stopping condition here is not evaluated
     
     # Add if the controller is not used
-    commands = np.array([0.,0.,0.]) # The stopping condition here is not evaluated
+    if nominal:
+        commands = np.array([0.,0.,0.]) # The stopping condition here is not evaluated
+    else:
+        commands = np.array([-0.45, -0.02, 0.])
 
     body_quat = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
     body_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
@@ -164,7 +170,7 @@ def compute_observation(scaling_factors):
     # Concatenate into a single observation vector
     return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles, scaled_joint_velocities, scaled_actions))
 
-def compute_actions(scaling_factors):
+def compute_actions(scaling_factors, previous_actions, nominal, actor_network):
 
     """
     Inference on the NN to retrive actions from observations.
@@ -172,38 +178,29 @@ def compute_actions(scaling_factors):
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    '''print('imu_gyro',imu_gyro)
-    print('imu_quat',imu_quat)
-    print('joint_pos',joint_pos)
-    print('joint_vel',joint_vel)'''
-    global latest_actions, previous_actions, stop_threads
-    while not stop_threads:
-        '''print('pubSub.imu_quat',pubSub.imu_quat)
-        print('imu_quat',imu_quat)'''
-        '''print('imu_gyro',imu_gyro)
-        print('imu_quat',imu_quat)
-        print('joint_pos',joint_pos)
-        print('joint_vel',joint_vel)'''
+    #global latest_actions, previous_actions, stop_threads
+    #while not stop_threads:
         #start_time = time.time()
         
-        inference_ready.wait()  # Wait for signal from the main thread
-        inference_ready.clear()
+     #   inference_ready.wait()  # Wait for signal from the main thread
+      #  inference_ready.clear()
 
-        obs = compute_observation(scaling_factors)
-        obs_tensor = torch.tensor(obs, dtype=torch.float32)
-        obs_normalized = actor_network.norm_obs(obs_tensor)
+    obs = compute_observation(scaling_factors, previous_actions, nominal)
+    obs_tensor = torch.tensor(obs, dtype=torch.float32)
+    obs_normalized = actor_network.norm_obs(obs_tensor)
 
-        with torch.no_grad():
-            new_actions1 = actor_network(obs_normalized).numpy()
-        
-        # Swap the actions to the correct order for SDK
-        new_actions = swap_legs(new_actions1)
+    with torch.no_grad():
+        new_actions1 = actor_network(obs_normalized).numpy()
+    
+    # Swap the actions to the correct order for SDK
+    #new_actions = swap_legs(new_actions1)
 
-        with lock:
-            previous_actions[:] = latest_actions  # Store current actions as previous
-            latest_actions[:] = new_actions  # Update latest actions
+    #with lock:
+    #    previous_actions[:] = latest_actions  # Store current actions as previous
+    #    latest_actions[:] = new_actions  # Update latest actions
 
-        """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
+    """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
+    return new_actions1
 
 def jointLinearInterpolation(initPos, targetPos, rate):
     """
@@ -275,17 +272,18 @@ if __name__ == '__main__':
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     # Decimation changed to 5 to have a 100 Hz main loop, like in the simulations
     decimation = 5
-    mps = mps_code.MPS(decimation, max_pos, min_pos, torque_values_n, Kp_n, Kd_n, scaling_qdes, default_joint_angles, scaling_factors)
+    mps = mps_code.MPS(decimation, max_pos, min_pos, torque_values_n, Kp_n, Kd_n, scaling_qdes, default_joint_angles, scaling_factors, config_value)
     torque_values = np.zeros(12)
     #state = sdk.LowState()
 
     motiontime = 0
+    nominal = True
 
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
     # Start the inference thread
-    threading.Thread(target=compute_actions, args=(scaling_factors,), daemon=True).start()
+    #threading.Thread(target=compute_actions, args=(scaling_factors,), daemon=True).start()
     while pubSub.cmd_pub.get_num_connections() < 1:
-            print('Waiting for subscribers')
+            pass
     time.sleep(10)
     pubSub.publish(np.zeros(12), np.zeros(12), np.zeros(12))
     while not rospy.is_shutdown():
@@ -295,15 +293,7 @@ if __name__ == '__main__':
         """
         step_start = time.time()
         motiontime += 1
-        print('++++++++++++++++ before wait in pos')
-
         imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist = pubSub.wait_for_all_messages()
-        print('++++++++++++++++ after wait in pos')
-
-        #print('imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist')
-        #print(imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist)
-        '''udp.Recv()
-        udp.GetRecv(state)'''
 
 
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
@@ -317,7 +307,6 @@ if __name__ == '__main__':
         # First, record initial position
         #'''
         if( motiontime >= 0 and motiontime < 1*(1/dt)):
-            print('loop A')
             # Extract qInit values using dictionary keys
             #qInit = [state_robot.motorState[d[key]].q for key in d]
             qInit = [joint_pos[i] for i in range(12)]
@@ -325,7 +314,6 @@ if __name__ == '__main__':
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
             torque_values = torque_values_n
-            print('loop B')
             rate_count += 1
             rate = rate_count / (5*(1/dt))
 
@@ -335,14 +323,28 @@ if __name__ == '__main__':
             qDes = np.clip(qDes, min_pos, max_pos)#'''
 
         elif( motiontime >= 7*(1/dt)):# and is_rec):
-            print('loop C')
-            # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
-                inference_ready.set()
+
+                actor_network_copy = copy.deepcopy(actor_network)
+                new_actions1 = compute_actions(scaling_factors, previous_actions, nominal, actor_network_copy)
+                
+                # Compute torque using nominal policy       
+                # Check which policy should be used
+                is_rec = mps.is_rec_single(qDes, pose, twist, joint_pos, joint_vel, actor_network_copy, np.copy(current_actions), swap_legs(new_actions1))
+                #is_rec = True
+                if not is_rec:
+                    nominal = False
+
+
+                new_actions1 = compute_actions(scaling_factors, previous_actions, nominal, actor_network)
+                previous_actions = current_actions
+            # Trigger inference every `decimation` steps
+            
+                #inference_ready.set()
 
                 # Get the latest available actions
-                with lock:  
-                    current_actions = np.copy(latest_actions)
+                #with lock:  
+                current_actions = swap_legs(new_actions1)
                 
             qDes = scaling_qdes * current_actions + np.array(default_joint_angles)
 
@@ -350,19 +352,23 @@ if __name__ == '__main__':
             qDes = np.clip(qDes, min_pos, max_pos)
 
             # MPS check
-          #  start_time = time.time()
-            if motiontime % decimation == 0:
-               #'''
-               #start_time = time.time()
-               is_rec, iter_mps = mps.is_rec_single(qDes, pose, twist, joint_pos, joint_vel, copy.deepcopy(actor_network), previous_actions, current_actions)
-               is_rec = True#'''
+          
                #print('time', time.time() - start_time)
                #time.sleep(0.01)
             #   print('mps')
         '''elif( motiontime >= 7*(1/dt) and not is_rec):
             # Use backup policy if at some point the MPS detects it is not possible to stop the robot
-            body_acc = np.array([pubSub.imu_acc[0], -pubSub.imu_acc[1], -pubSub.imu_acc[2]])
-            qDes, last_action = mps_code.computeBackup(pubSub.pose, pubSub.twist, pubSub.joint_pos, pubSub.joint_vel, mps.backup_nn, body_acc, last_action)'''
+            previous_actions_save = previous_actions  # Store current actions as previous
+            latest_actions_save = latest_actions
+
+            inference_ready.set()
+            with lock:  
+                    current_actions = np.copy(latest_actions)
+                
+            qDes = scaling_qdes * current_actions + np.array(default_joint_angles)
+
+            # Clip the joint angles to the joint limits
+            qDes = np.clip(qDes, min_pos, max_pos)'''
             
 
         '''if motiontime >= 1*(1/dt):
@@ -387,12 +393,9 @@ if __name__ == '__main__':
         udp.Send()'''
         
         time.sleep(0.02)
-        print('before publish')
         pubSub.publish(qDes, np.zeros(12), torque_values*4)
-        print('motiontime',motiontime)
         # Temporize the loop to maintain the desired frequency
         time_until_next_step = dt - (time.time() - step_start)
-        print('time_until_next_step',time_until_next_step)
         #if time_until_next_step > 0:
         #    rospy.sleep(time_until_next_step)
     rospy.spin()
