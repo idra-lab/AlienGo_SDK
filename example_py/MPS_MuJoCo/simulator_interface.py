@@ -61,7 +61,7 @@ class MujocoSim():
             v_muj = self.data.qvel.copy()
             renderer.update_scene(self.data)
             viewer_muj.sync()
-        time.sleep(0.02)
+        #time.sleep(0.02)
         pubSub.publisher(self.data.qpos[7:].copy(), self.data.qvel[6:].copy(),
                          self.data.sensor('Body_Gyro').data.copy(),
                          self.data.sensor('Body_Quat').data.copy(), 

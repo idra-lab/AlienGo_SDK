@@ -284,7 +284,7 @@ if __name__ == '__main__':
     #threading.Thread(target=compute_actions, args=(scaling_factors,), daemon=True).start()
     while pubSub.cmd_pub.get_num_connections() < 1:
             pass
-    time.sleep(10)
+    #time.sleep(10)
     pubSub.publish(np.zeros(12), np.zeros(12), np.zeros(12))
     while not rospy.is_shutdown():
         """
@@ -392,12 +392,12 @@ if __name__ == '__main__':
         udp.SetSend(cmd)
         udp.Send()'''
         
-        time.sleep(0.02)
+        #time.sleep(0.02)
         pubSub.publish(qDes, np.zeros(12), torque_values*4)
         # Temporize the loop to maintain the desired frequency
         time_until_next_step = dt - (time.time() - step_start)
-        #if time_until_next_step > 0:
-        #    rospy.sleep(time_until_next_step)
+        if time_until_next_step > 0:
+            time.sleep(time_until_next_step)
     rospy.spin()
         # elapsed_time = time.time() - step_start  # Time taken for the loop iteration
         # print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)")
