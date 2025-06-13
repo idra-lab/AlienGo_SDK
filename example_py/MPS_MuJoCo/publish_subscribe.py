@@ -15,7 +15,14 @@ class PubSub():
         self.joint_vel = np.zeros(12)
         self.pose = np.zeros(7)
         self.twist = np.zeros(6)
-        self.joint_pub = JointState()
+        self.joint_state_des = JointState()
+
+        self.joint_state_des.name = ["FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+                                     "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",                                     
+                                     "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint", 
+                                     "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
+                                     "gains"] # Fake 13th joint to store gains
+
         self.condition = threading.Condition()
         self.imu_received = False
         self.joint_state_received = False
@@ -23,6 +30,7 @@ class PubSub():
 
 
     def callback_imu(self, msg):
+      #  print('received IMU')
         with self.condition:
           # Timestamp
           self.imu_time = msg.header.stamp.to_sec()
@@ -50,11 +58,13 @@ class PubSub():
               msg.linear_acceleration.z
           ], dtype=np.float64)
           # Let everybody know that the IMU message has been received
+          
           self.imu_received = True
           self.condition.notify_all()
 
 
     def odom_callback(self, msg):
+      #  print('received odom')
         with self.condition:
           # Timestamp
           self.odom_time = msg.header.stamp.to_sec()
@@ -80,17 +90,21 @@ class PubSub():
               msg.twist.twist.angular.z
           ], dtype=np.float64)
         # Let everybody know that the Odometry message has been received
-        
+          
           self.odom_received = True
           self.condition.notify_all()
 
     def callback_joint(self, data):
-        # Ordered as in MuJoCo
+      # print('received joint')
+      # Data is received Ordered as in HyQ/ANYmal convention LF RF LH RH
+      # we convert into Unitree convention RF LF RH LH
+      unitree_ids = [3,4,5,0,1,2,9,10,11,6,7,8]
       with self.condition:
         for i in range(12):
-            self.joint_pos[i] = data.position[i]
-            self.joint_vel[i] = data.velocity[i]
+            self.joint_pos[unitree_ids[i]] = data.position[i]
+            self.joint_vel[unitree_ids[i]] = data.velocity[i]
         # Let everybody know that the Odometry message has been received
+        
         self.joint_state_received = True
         self.condition.notify_all()
 
@@ -98,6 +112,7 @@ class PubSub():
         self.imu_sub = rospy.Subscriber(config_topics['imu'], Imu, self.callback_imu)
         self.joint_state_sub = rospy.Subscriber(config_topics['joint_states'], JointState, self.callback_joint)
         self.odom_sub = rospy.Subscriber(config_topics['odometry'], Odometry, self.odom_callback)
+      #  print('subscribed')
         #self.imu_sub = rospy.Subscriber(config_topics['twist'], TwistWithCovarianceStamped, self.callback_twist)
         #self.imu_sub = rospy.Subscriber(config_topics['pose'], PoseWithCovarianceStamped, self.callback_pose)
 
@@ -117,15 +132,19 @@ class PubSub():
 
             return msgs
         
-    def init_publisher(self):
-        self.cmd_pub = rospy.Publisher('/command', JointState, queue_size=10)
+    def init_publisher(self, config_topics):
+        self.cmd_pub = rospy.Publisher(config_topics['command'], JointState, queue_size=10)
 
-    def publish(self, qpos, qvel, eff):
+    def publish(self, qpos, qvel, eff, Kp, Kd):
         try:
             #rospy.init_node('communicate_aliengo', anonymous=True)
-            self.joint_pub.position = qpos
-            self.joint_pub.velocity = qvel
-            self.joint_pub.effort = eff
-            self.cmd_pub.publish(self.joint_pub)
+            self.joint_state_des.position = np.concatenate((qpos, [Kp])) # store Kp on the fake joint pos
+            self.joint_state_des.velocity = np.concatenate((qvel, [Kd])) # store Kd on the fake joint vel
+            # concatenate a zero to maintain size to 13
+            self.joint_state_des.effort = np.concatenate((eff, [0])) 
+         #   print('pos',qpos)
+          #  print('vel',qvel)
+          #  print('eff',eff)
+            self.cmd_pub.publish(self.joint_state_des)
         except rospy.ROSInterruptException:
             pass

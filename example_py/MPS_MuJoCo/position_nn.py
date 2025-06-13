@@ -24,17 +24,17 @@ import threading
 
 # Remove if controller is not used 
 # Initialize pygame and the joystick module
-#pygame.init()
-#pygame.joystick.init()
+pygame.init()
+pygame.joystick.init()
 
 # Remove if controller is not used 
 # Check if there is at least one joystick (gamepad) connected
-#if pygame.joystick.get_count() == 0:
-#    print("No joystick connected")
-#else:
-#    joystick = pygame.joystick.Joystick(0)  # Get the first joystick
-#    joystick.init()
-#    print(f"Detected joystick: {joystick.get_name()}")
+if pygame.joystick.get_count() == 0:
+    print("No joystick connected")
+else:
+    joystick = pygame.joystick.Joystick(0)  # Get the first joystick
+    joystick.init()
+    print(f"Detected joystick: {joystick.get_name()}")
 
 ### Configuration and neural network setup
 # Nominal policy
@@ -49,8 +49,6 @@ min_pos = config['nominal']['robot']['min_pos']
 torque_values_n = config['nominal']['robot']['torque_values']
 scaling_qdes = scaling_factors['factor']
 
-# Backup policy
-torque_values_b = config['backup']['robot']['torque_values']
 
 imu_acc = np.zeros(3)
 imu_quat = np.zeros(4)
@@ -219,10 +217,10 @@ def check_safety_stops(imu_quat):
     # Calculate inclination using arcsin formula
     inclination = 2 * np.arcsin(np.sqrt(body_quat[1]**2 + body_quat[2]**2))
 
-    stop_button = False#get_safety_button()  # Check if the safety button is pressed
+    stop_button = get_safety_button()  # Check if the safety button is pressed
 
-    #if pygame.joystick.get_count() != 1:
-   #     return True
+    if pygame.joystick.get_count() != 1:
+        return True
 
     if stop_button:#inclination > np.pi/8:# or stop_button:
         return True
@@ -232,7 +230,7 @@ def check_safety_stops(imu_quat):
 if __name__ == '__main__':
     rospy.init_node('communicate_aliengo')
     pubSub = publish_subscribe.PubSub()
-    pubSub.init_publisher()
+    pubSub.init_publisher(config['controller']['topics'])
     pubSub.init_subscribers(config['controller']['topics'])
     
 
@@ -282,37 +280,49 @@ if __name__ == '__main__':
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
     # Start the inference thread
     #threading.Thread(target=compute_actions, args=(scaling_factors,), daemon=True).start()
+    n_wait = 0
     while pubSub.cmd_pub.get_num_connections() < 1:
-            pass
+        n_wait += 1
+        pass
+    #print('after wait')
     #time.sleep(10)
-    pubSub.publish(np.zeros(12), np.zeros(12), np.zeros(12))
+    #pubSub.publish(np.zeros(13), np.zeros(13), np.zeros(13))
     while not rospy.is_shutdown():
+       # print('while')
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
         The main loop for sending commands is running at 500Hz
         """
         step_start = time.time()
         motiontime += 1
-        imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist = pubSub.wait_for_all_messages()
-
+        #imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist = pubSub.wait_for_all_messages()
+       # print('after wait_for_all_messages')
 
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
-        '''if check_safety_stops(pubSub.imu_quat):  # Using qpos to check inclination
+        if check_safety_stops(pubSub.imu_quat):  # Using qpos to check inclination
             print("Safety condition triggered, disabling control gains")
             # Set Kp, Kd to 0 (disable control) for safety
-            Kp = [0, 0, 0]  # Set Kp to 0 for all joints
-            Kd = [0, 0, 0]  # Set Kd to 0 for all joints
-            exit()'''
+          #  Kp = [0, 0, 0]  # Set Kp to 0 for all joints
+          #  Kd = [0, 0, 0]  # Set Kd to 0 for all joints
+            Kp = 0
+            Kd = 0
+            pubSub.publish(qDes, np.zeros(12), torque_values*4, 0, 0)
+            exit()
 
         # First, record initial position
         #'''
         if( motiontime >= 0 and motiontime < 1*(1/dt)):
+            Kp = 0
+            Kd = 0
             # Extract qInit values using dictionary keys
             #qInit = [state_robot.motorState[d[key]].q for key in d]
-            qInit = [joint_pos[i] for i in range(12)]
+            qInit = [pubSub.joint_pos[i] for i in range(12) ]
 
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
+            #exit()
+            Kp = Kp_n
+            Kd = Kd_n
             torque_values = torque_values_n
             rate_count += 1
             rate = rate_count / (5*(1/dt))
@@ -321,8 +331,11 @@ if __name__ == '__main__':
             #qDes = [jointLinearInterpolation(qInit[i], default_joint_angles[i], rate) for i in range(12)]
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
             qDes = np.clip(qDes, min_pos, max_pos)#'''
+            #print(qDes)
 
+        
         elif( motiontime >= 7*(1/dt)):# and is_rec):
+            exit()
             if motiontime % decimation == 0:
 
                 actor_network_copy = copy.deepcopy(actor_network)
@@ -350,50 +363,16 @@ if __name__ == '__main__':
 
             # Clip the joint angles to the joint limits
             qDes = np.clip(qDes, min_pos, max_pos)
+            #'''
 
             # MPS check
           
-               #print('time', time.time() - start_time)
-               #time.sleep(0.01)
-            #   print('mps')
-        '''elif( motiontime >= 7*(1/dt) and not is_rec):
-            # Use backup policy if at some point the MPS detects it is not possible to stop the robot
-            previous_actions_save = previous_actions  # Store current actions as previous
-            latest_actions_save = latest_actions
-
-            inference_ready.set()
-            with lock:  
-                    current_actions = np.copy(latest_actions)
-                
-            qDes = scaling_qdes * current_actions + np.array(default_joint_angles)
-
-            # Clip the joint angles to the joint limits
-            qDes = np.clip(qDes, min_pos, max_pos)'''
-            
-
-        '''if motiontime >= 1*(1/dt):
-            for leg_idx, leg in enumerate(legs):
-                for joint_idx, joint in enumerate(joints):
-                    key = f"{leg}{joint}"
-                    cmd.motorCmd[d[key]].q = qDes[leg_idx * 3 + joint_idx]
-                    cmd.motorCmd[d[key]].dq = 0
-                    cmd.motorCmd[d[key]].Kp = Kp[joint_idx]
-                    cmd.motorCmd[d[key]].Kd = Kd[joint_idx]
-                    cmd.motorCmd[d[key]].tau = torque_values[joint_idx]
-
-           
-        """ Safety checks"""
-        safe.PowerProtect(cmd, state, 8)
-        safe.PositionLimit(cmd)
-
-        if motiontime > 5*(1/dt):
-            safe.PositionProtect(cmd, state, 0.087)
-
-        udp.SetSend(cmd)
-        udp.Send()'''
         
         #time.sleep(0.02)
-        pubSub.publish(qDes, np.zeros(12), torque_values*4)
+        #print('before publish')
+        if(motiontime >= 1*(1/dt)):
+            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp_n, Kd_n)
+        #print('after publish')
         # Temporize the loop to maintain the desired frequency
         time_until_next_step = dt - (time.time() - step_start)
         if time_until_next_step > 0:
