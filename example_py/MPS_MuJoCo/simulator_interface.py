@@ -37,19 +37,22 @@ class MujocoSim():
     
     def simulate(self, Kp, Kd, viewer_muj, renderer, iter_loop):
         
-        joint_pos, _, forward_torques = pubSub.wait_for_all_messages()
-        self.qDes = joint_pos
+        #joint_pos, _, forward_torques = pubSub.wait_for_all_messages()
+        #print('joint_pos',joint_pos)
+        self.qDes = pubSub.joint_pos
+        forward_torques = pubSub.joint_eff
         #self.qDes = self.joint_pos
         #print(iter_loop)
         # Add force for 200 iterations
         if iter_loop >= 5000 and iter_loop < 5200:
-           self.data.xfrc_applied[self.force_body][2] = 180
+           self.data.xfrc_applied[self.force_body][2] = 0*180
         else:
             self.data.xfrc_applied[self.force_body][2] = 0
 
         step_start = time.time()
         #sim_time_start = self.data.time
         if np.any(self.qDes != np.zeros(12)):
+            
             q_muj = self.data.qpos.copy()
             v_muj = self.data.qvel.copy()
             #while j < self.iter_ctrl:
@@ -88,12 +91,14 @@ if __name__ == '__main__':
         renderer = mujoco.Renderer(mujoco_sim.model)
         viewer_muj = mujoco.viewer.launch_passive(mujoco_sim.model, mujoco_sim.data)
         while pubSub.imu_data_pub.get_num_connections() < 1 or pubSub.odom_data_pub.get_num_connections() < 1 or pubSub.joint_state_pub.get_num_connections() < 1:
-            pass#print('Waiting for subscribers')
+            #print('waiting')
+            pass
         iter_loop = 0
         while not rospy.is_shutdown():
             mujoco_sim.simulate(100, 3, viewer_muj, renderer, iter_loop)
             #print("mujoco_sim.data.sensor('Body_Gyro').data.copy()",mujoco_sim.data.sensor('Body_Gyro').data.copy())
             iter_loop += 1
+            #print(iter_loop)
     except Exception as e:
         print(e)
         rospy.signal_shutdown("killed")

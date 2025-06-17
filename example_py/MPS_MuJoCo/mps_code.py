@@ -5,9 +5,6 @@ import torch.nn as nn
 from collections import OrderedDict
 import os
 from utils import quat_rotate_inverse
-import matplotlib
-from matplotlib.path import Path
-from shapely.geometry import Polygon
 import time
 
 # Value function network load
@@ -193,7 +190,7 @@ class MPS:
         self.lim_vel = 26.5
         self.contact_height = 0.03
         self.feet_geom = [12, 20, 36, 28]
-        self.grav_tens = torch.tensor([[0., 0., -1.]], device='cuda:0', dtype=torch.double)
+        self.grav_tens = torch.tensor([[0., 0., -1.]], device='cpu', dtype=torch.double)
 
         # Model robot using MuJoCo for the MPS loop
         self.model, self.data = modelData()
@@ -208,7 +205,7 @@ class MPS:
         self.critic_network = CriticEvaluator(self.critic_model, self.params)
 
     def is_rec_single(self, qDes, pose, twist, joint_pos, joint_vel, sim_nn, previous_actions, current_actions):
-        #value_fnc_result = np.zeros(self.N_mps+1)
+        value_fnc_result = np.zeros(self.N_mps+1)
 
         # Define initial data for simulation
         self.data.qpos = np.concatenate((pose, joint_pos))
@@ -226,12 +223,8 @@ class MPS:
             q_muj = self.data.qpos.copy()
             v_muj = self.data.qvel.copy()
         nominal = False
-
-        threshold = 0.3
         for i in range(0, self.N_mps): ##simulated steps
-            value_fnc_result = self.computeValueFnc(threshold)
-            if not value_fnc_result:
-                return False
+            value_fnc_result[i] = self.computeValueFnc()
 
             ## Simulate x with pi_rec
             new_actions1 = self.compute_actions(previous_actions, sim_nn)
@@ -248,17 +241,15 @@ class MPS:
                 q_muj = self.data.qpos.copy()
                 v_muj = self.data.qvel.copy()
 
-            threshold += 0.1
-
         '''if value_fnc_result[-1] == 1:
             return True
         else:
             return False'''
-        value_fnc_result = self.computeValueFnc(threshold)
-        if value_fnc_result:
-            return True
-        else:
+        value_fnc_result[-1] = self.computeValueFnc()
+        if np.any(value_fnc_result == 0):
             return False
+        else:
+            return True
 
     def swap_legs(self, array):
         """
@@ -290,7 +281,7 @@ class MPS:
         joint_velocities = self.swap_legs(joint_velocities1)
 
         # Gravity vector in body frame
-        body_quat_tensor = torch.tensor(body_quat, device='cuda:0', dtype=torch.double).unsqueeze(0)
+        body_quat_tensor = torch.tensor(body_quat, device='cpu', dtype=torch.double).unsqueeze(0)
         gravity_body = quat_rotate_inverse(body_quat_tensor, self.grav_tens)
         prev_actions = self.swap_legs(prev_actions1)
 
@@ -314,35 +305,14 @@ class MPS:
         with torch.no_grad():
             new_actions1 = sim_nn(obs_normalized).numpy()
         return new_actions1
-
-    def capture_point_check(self, xy_coords, factor=0.7):
-        # Compute the capture point coordinates
-        com_coordinates = self.data.body('trunk').subtree_com
-        mujoco.mj_subtreeVel(self.model, self.data)
-        com_velocities = self.data.body('trunk').subtree_linvel
-        omega = np.sqrt(abs(self.model.opt.gravity[2]) / com_coordinates[2])
-        cp_x = com_coordinates[0] + (com_velocities[0] / omega)
-        cp_y = com_coordinates[1] + (com_velocities[1] / omega)
-
-        # Define convex hull and shrink it
-        hull_path = Path(xy_coords)
-        polygon = Polygon(hull_path.vertices)
-        hull_path = hull_path.transformed(matplotlib.transforms.Affine2D().scale(factor))
-        shrinked_polygon = Polygon(hull_path.vertices)
-
-        translate_x = polygon.centroid.x - shrinked_polygon.centroid.x
-        translate_y = polygon.centroid.y - shrinked_polygon.centroid.y
-        hull_path = hull_path.transformed(matplotlib.transforms.Affine2D().translate(translate_x, translate_y))
-
-        return hull_path.contains_point((cp_x, cp_y))
     
-    def computeValueFnc(self, threshold):
+    def computeValueFnc(self):
         body_quat_reordered = np.array([self.data.qpos[4], self.data.qpos[5], self.data.qpos[6], self.data.qpos[3]])
-        tensor_quat = torch.tensor(body_quat_reordered, device='cuda:0', dtype=torch.double).unsqueeze(0)
+        tensor_quat = torch.tensor(body_quat_reordered, device='cpu', dtype=torch.double).unsqueeze(0)
         gravity_body = quat_rotate_inverse(tensor_quat, self.grav_tens)[0].cpu().numpy()
         body_lin_vel_global = self.data.qvel[:3].copy()
         body_ang_vel_global = self.data.qvel[3:6].copy()
-        body_lin_vel_tensor = torch.tensor(body_lin_vel_global[None], device='cuda:0', dtype=torch.double)
+        body_lin_vel_tensor = torch.tensor(body_lin_vel_global[None], device='cpu', dtype=torch.double)
         body_lin_vel_local = quat_rotate_inverse(tensor_quat, body_lin_vel_tensor)[0].cpu().numpy()
         vel_tp1 = np.concatenate([body_lin_vel_local, body_ang_vel_global])
         joint_pos_tp1 = self.swap_legs(self.data.qpos[7:].copy())
@@ -365,9 +335,9 @@ class MPS:
         # V_safe = critic_network.apply_fn(critic_network.params, obs_flax)
         V_safe = critic_inference(self.critic_model, self.critic_network.params, obs_flax)
 
-        if V_safe > threshold:
+        if V_safe > 0.9:
             #print(f"\033[92mV_safe: {V_safe:.4f}\033[0m")
-            return True
+            return 1
         else:
             #print(f"\033[91mV_safe: {V_safe:.4f}\033[0m")
-            return False
+            return 0

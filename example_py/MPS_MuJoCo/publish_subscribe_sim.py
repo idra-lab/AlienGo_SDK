@@ -11,6 +11,8 @@ class PubSub():
         self.joint_pos = np.zeros(12)
         self.joint_vel = np.zeros(12)
         self.joint_eff = np.zeros(12)
+        self.qpos_order = np.zeros(12)
+        self.qvel_order = np.zeros(12)
         self.condition = threading.Condition()
         self.command_received = False
 
@@ -41,11 +43,11 @@ class PubSub():
         
     def init_subscribers(self):
         self.joint_state_sub = rospy.Subscriber('/command', JointState, self.callback_command)
-
+        
     def init_publishers(self):
-        self.imu_data_pub = rospy.Publisher('/aliengo/trunk_imu', Imu, queue_size=10)
-        self.joint_state_pub = rospy.Publisher('/aliengo/joint_states', JointState, queue_size=10)
-        self.odom_data_pub = rospy.Publisher('/aliengo/ground_truth', Odometry, queue_size=10)
+        self.imu_data_pub = rospy.Publisher('/aliengo_ros/imu', Imu, queue_size=10)
+        self.joint_state_pub = rospy.Publisher('/joint_states', JointState, queue_size=10)
+        self.odom_data_pub = rospy.Publisher('/state_estimator_pronto/odom', Odometry, queue_size=10)
         rospy.init_node('vel', anonymous=True)
         self.joint_pub = JointState()
         self.imu_pub = Imu()
@@ -53,8 +55,15 @@ class PubSub():
         
     def publisher(self, qpos, qvel, imu_gyro, imu_quat, imu_acc, pose, twist):
         try:         
-            self.joint_pub.position = qpos
-            self.joint_pub.velocity = qvel
+            unitree_ids = [3,4,5,0,1,2,9,10,11,6,7,8]
+
+            for i in range(12):
+                self.qpos_order[unitree_ids[i]] = qpos[i]
+                self.qvel_order[unitree_ids[i]] = qvel[i]
+            
+            self.joint_pub.position = self.qpos_order
+            self.joint_pub.velocity = self.qvel_order
+
 
             self.imu_pub.angular_velocity.x = imu_gyro[0]
             self.imu_pub.angular_velocity.y = imu_gyro[1]

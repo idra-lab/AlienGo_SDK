@@ -19,22 +19,23 @@ import pygame
 
 import threading
 
-
+simulator = True
 
 
 # Remove if controller is not used 
 # Initialize pygame and the joystick module
-pygame.init()
-pygame.joystick.init()
+if not simulator:
+    pygame.init()
+    pygame.joystick.init()
 
-# Remove if controller is not used 
-# Check if there is at least one joystick (gamepad) connected
-if pygame.joystick.get_count() == 0:
-    print("No joystick connected")
-else:
-    joystick = pygame.joystick.Joystick(0)  # Get the first joystick
-    joystick.init()
-    print(f"Detected joystick: {joystick.get_name()}")
+    # Remove if controller is not used 
+    # Check if there is at least one joystick (gamepad) connected
+    if pygame.joystick.get_count() == 0:
+        print("No joystick connected")
+    else:
+        joystick = pygame.joystick.Joystick(0)  # Get the first joystick
+        joystick.init()
+        print(f"Detected joystick: {joystick.get_name()}")
 
 ### Configuration and neural network setup
 # Nominal policy
@@ -139,6 +140,7 @@ def compute_observation(scaling_factors, prev_actions1, nominal):
         commands = np.array([0.,0.,0.]) # The stopping condition here is not evaluated
     else:
         commands = np.array([-0.45, -0.02, 0.])
+    commands = np.array([0.,0.,0.])
 
     body_quat = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
     body_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
@@ -283,10 +285,13 @@ if __name__ == '__main__':
     n_wait = 0
     while pubSub.cmd_pub.get_num_connections() < 1:
         n_wait += 1
-        pass
+       # print(n_wait)
+        #pass
     #print('after wait')
-    #time.sleep(10)
-    #pubSub.publish(np.zeros(13), np.zeros(13), np.zeros(13))
+    #time.sleep(2)
+    #pubSub.publish(np.zeros(12), np.zeros(12), np.zeros(12), Kp_n, Kd_n)
+    firstTime = True
+
     while not rospy.is_shutdown():
        # print('while')
         """
@@ -295,18 +300,27 @@ if __name__ == '__main__':
         """
         step_start = time.time()
         motiontime += 1
+        
         #imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist = pubSub.wait_for_all_messages()
        # print('after wait_for_all_messages')
+        data_new = [pubSub.imu_acc,pubSub.imu_quat,pubSub.imu_gyro,pubSub.joint_pos,pubSub.joint_vel,pubSub.pose,pubSub.twist]
+        imu_acc = data_new[0]
+        imu_quat = data_new[1]
+        imu_gyro = data_new[2]
+        joint_pos = data_new[3]
+        joint_vel = data_new[4]
+        pose = data_new[5]
+        twist = data_new[6]
 
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
-        if check_safety_stops(pubSub.imu_quat):  # Using qpos to check inclination
+        if not simulator and check_safety_stops(pubSub.imu_quat):  # Using qpos to check inclination
             print("Safety condition triggered, disabling control gains")
             # Set Kp, Kd to 0 (disable control) for safety
           #  Kp = [0, 0, 0]  # Set Kp to 0 for all joints
           #  Kd = [0, 0, 0]  # Set Kd to 0 for all joints
             Kp = 0
             Kd = 0
-            pubSub.publish(qDes, np.zeros(12), torque_values*4, 0, 0)
+           # pubSub.publish(qDes, np.zeros(12), torque_values*4, 0, 0)
             exit()
 
         # First, record initial position
@@ -331,24 +345,32 @@ if __name__ == '__main__':
             #qDes = [jointLinearInterpolation(qInit[i], default_joint_angles[i], rate) for i in range(12)]
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
             qDes = np.clip(qDes, min_pos, max_pos)#'''
-            #print(qDes)
+           # print(qDes)
 
         
         elif( motiontime >= 7*(1/dt)):# and is_rec):
-            exit()
+            if firstTime:
+                print("START PRONTO!")
+                time.sleep(10.)
+                firstTime = False
+            #    print('scaling_factors',scaling_factors)
+            #    print('previous_actions',previous_actions)
+                print('after wait')                     
             if motiontime % decimation == 0:
 
+                '''
                 actor_network_copy = copy.deepcopy(actor_network)
                 new_actions1 = compute_actions(scaling_factors, previous_actions, nominal, actor_network_copy)
                 
                 # Compute torque using nominal policy       
                 # Check which policy should be used
-                is_rec = mps.is_rec_single(qDes, pose, twist, joint_pos, joint_vel, actor_network_copy, np.copy(current_actions), swap_legs(new_actions1))
-                #is_rec = True
+                is_rec = mps.is_rec_single(qDes, pubSub.pose, pubSub.twist, pubSub.joint_pos, pubSub.joint_vel, actor_network_copy, np.copy(current_actions), swap_legs(new_actions1))
+                is_rec = True
                 if not is_rec:
-                    nominal = False
+                    nominal = False#'''
 
-
+                
+                #'''
                 new_actions1 = compute_actions(scaling_factors, previous_actions, nominal, actor_network)
                 previous_actions = current_actions
             # Trigger inference every `decimation` steps
@@ -358,11 +380,12 @@ if __name__ == '__main__':
                 # Get the latest available actions
                 #with lock:  
                 current_actions = swap_legs(new_actions1)
+                #print(scaling_qdes * current_actions + np.array(default_joint_angles))
                 
             qDes = scaling_qdes * current_actions + np.array(default_joint_angles)
 
             # Clip the joint angles to the joint limits
-            qDes = np.clip(qDes, min_pos, max_pos)
+            qDes = np.clip(qDes, min_pos, max_pos)#'''
             #'''
 
             # MPS check
@@ -372,6 +395,7 @@ if __name__ == '__main__':
         #print('before publish')
         if(motiontime >= 1*(1/dt)):
             pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp_n, Kd_n)
+            #print(motiontime)
         #print('after publish')
         # Temporize the loop to maintain the desired frequency
         time_until_next_step = dt - (time.time() - step_start)
