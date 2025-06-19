@@ -10,6 +10,7 @@ def load_config(file_path):
     with open(file_path, 'r') as file:
         return yaml.safe_load(file)
     
+# Function to load value function
 def load_value(file_path):
     with open(file_path, 'rb') as f:
         return pickle.load(f)
@@ -40,7 +41,7 @@ class ActorNetwork(nn.Module):
 
 
 # Function to load the actor network
-def load_actor_network(config, network_path):
+def load_actor_network(network_path):
     input_dim = 45
     action_dim = 12
     actor_network = ActorNetwork(input_dim=input_dim, action_dim=action_dim)

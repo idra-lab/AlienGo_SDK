@@ -11,46 +11,52 @@ import rospy
 import publish_subscribe
 from sensor_msgs.msg import Imu, JointState
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
+import message_filters
 
 # Neural network and configuration imports
-from config_loader import load_config, load_actor_network, load_value
+from config_loader import load_config, load_actor_network
 from utils import scale_axis, quat_rotate_inverse, swap_legs
 import pygame
 
 import threading
+import os
+os.environ["XLA_FLAGS"] = os.environ.get("XLA_FLAGS", "") + " --xla_gpu_triton_gemm_any=True"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
 
 simulator = True
 
+### Configuration and setup of neural networks
 
-# Remove if controller is not used 
-# Initialize pygame and the joystick module
-if not simulator:
-    pygame.init()
-    pygame.joystick.init()
-
-    # Remove if controller is not used 
-    # Check if there is at least one joystick (gamepad) connected
-    if pygame.joystick.get_count() == 0:
-        print("No joystick connected")
-    else:
-        joystick = pygame.joystick.Joystick(0)  # Get the first joystick
-        joystick.init()
-        print(f"Detected joystick: {joystick.get_name()}")
-
-### Configuration and neural network setup
-# Nominal policy
 config_path = "config.yaml"
 config = load_config(config_path)
-actor_network = load_actor_network(config['nominal'],config['nominal']['paths']['checkpoint_path'])
-scaling_factors = config['nominal']['scaling']
-default_joint_angles = config['nominal']['robot']['default_joint_angles']
 
-max_pos = config['nominal']['robot']['max_pos']
-min_pos = config['nominal']['robot']['min_pos']
-torque_values_n = config['nominal']['robot']['torque_values']
+# Use simulator or real robot
+simulator = config['controller']['robot']['simulator']
+
+# Trot policy
+actor_network = load_actor_network(config['policy']['paths']['checkpoint_path'])
+scaling_factors = config['policy']['scaling']
+default_joint_angles = config['policy']['robot']['default_joint_angles']
+
+max_pos = config['policy']['robot']['max_pos']
+min_pos = config['policy']['robot']['min_pos']
+lim_tau = config['policy']['robot']['lim_tau']
+torque_values_n = config['policy']['robot']['torque_values']
 scaling_qdes = scaling_factors['factor']
 
+xml_path = config['controller']['robot']['model']
 
+# Value function
+config_value = mps_code.load_value(config['policy']['paths']['value_function'])
+
+## Shared variables
+# For actions
+previous_actions = np.zeros(12)  # Store the previous actions
+current_actions = np.zeros(12)  # Store current actions
+
+# For ROS messages from the robot
+torque_values = np.zeros(12)
 imu_acc = np.zeros(3)
 imu_quat = np.zeros(4)
 imu_gyro = np.zeros(3)
@@ -58,11 +64,6 @@ joint_pos = np.zeros(12)
 joint_vel = np.zeros(12)
 pose = np.zeros(7)
 twist = np.zeros(6)
-
-# Value function
-config_path_value = '../nn/VF_safe_MPC_small.pkl'
-config_value = load_value(config_path_value)
-
 
 def get_commands(): 
     """
@@ -117,31 +118,19 @@ def get_safety_button():
        
     return False
 
-# Shared variables
-lock = threading.Lock()
-latest_actions = np.zeros(12)  # Store the latest actions safely across threads
-previous_actions = np.zeros(12)  # Store the previous actions
-current_actions = np.zeros(12)
-inference_ready = threading.Event()  # Event to signal new inference results
-stop_threads = False  # Flag to stop threads gracefully
-
 def compute_observation(scaling_factors, prev_actions1, nominal):
     """
     Compute the observation vector from the robot's state.
     Legs are swapped to match the order of the neural network input.
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
-    """
-    # Remove if the controller is not used
-    #commands = get_commands() # The stopping condition here is not evaluated
-    
-    # Add if the controller is not used
+    """    
+    # Send specific commands instead of using the controller
     if nominal:
-        commands = np.array([0.,0.,0.]) # The stopping condition here is not evaluated
+        commands = np.array([0.,0.,0.])
     else:
         commands = np.array([-0.45, -0.02, 0.])
-    commands = np.array([0.,0.,0.])
-
+    
     body_quat = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
     body_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
     joint_angles1 = [joint_pos[i] for i in range(12)]
@@ -178,13 +167,6 @@ def compute_actions(scaling_factors, previous_actions, nominal, actor_network):
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    #global latest_actions, previous_actions, stop_threads
-    #while not stop_threads:
-        #start_time = time.time()
-        
-     #   inference_ready.wait()  # Wait for signal from the main thread
-      #  inference_ready.clear()
-
     obs = compute_observation(scaling_factors, previous_actions, nominal)
     obs_tensor = torch.tensor(obs, dtype=torch.float32)
     obs_normalized = actor_network.norm_obs(obs_tensor)
@@ -192,14 +174,6 @@ def compute_actions(scaling_factors, previous_actions, nominal, actor_network):
     with torch.no_grad():
         new_actions1 = actor_network(obs_normalized).numpy()
     
-    # Swap the actions to the correct order for SDK
-    #new_actions = swap_legs(new_actions1)
-
-    #with lock:
-    #    previous_actions[:] = latest_actions  # Store current actions as previous
-    #    latest_actions[:] = new_actions  # Update latest actions
-
-    """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
     return new_actions1
 
 def jointLinearInterpolation(initPos, targetPos, rate):
@@ -214,8 +188,7 @@ def check_safety_stops(imu_quat):
     """
     Check if the inclination of the robot base exceeds the threshold (pi/8) and checks the safety button as well.
     """
-    #imu = state.imu
-    body_quat = imu_quat#imu.quaternion  # Quaternion from qpos
+    body_quat = imu_quat  # Quaternion from qpos
     # Calculate inclination using arcsin formula
     inclination = 2 * np.arcsin(np.sqrt(body_quat[1]**2 + body_quat[2]**2))
 
@@ -224,17 +197,30 @@ def check_safety_stops(imu_quat):
     if pygame.joystick.get_count() != 1:
         return True
 
-    if stop_button:#inclination > np.pi/8:# or stop_button:
+    if stop_button or inclination > np.pi/8:
         return True
     else:
         return False
 
 if __name__ == '__main__':
+    # Initialize pygame and the joystick module if the real robot is used
+    if not simulator:
+        pygame.init()
+        pygame.joystick.init()
+
+        # Check if there is at least one joystick (gamepad) connected
+        if pygame.joystick.get_count() == 0:
+            print("No joystick connected")
+        else:
+            joystick = pygame.joystick.Joystick(0)  # Get the first joystick
+            joystick.init()
+            print(f"Detected joystick: {joystick.get_name()}")
+
+    # ROS communication
     rospy.init_node('communicate_aliengo')
     pubSub = publish_subscribe.PubSub()
     pubSub.init_publisher(config['controller']['topics'])
     pubSub.init_subscribers(config['controller']['topics'])
-    
 
     # Initialize as recoverable
     is_rec = True
@@ -261,23 +247,23 @@ if __name__ == '__main__':
             0, 0, 0]
     
     rate_count = 0
-    Kp_n = config['nominal']['robot']['Kp_n']
-    Kd_n = config['nominal']['robot']['Kd_n']
-    # PD tuning parameters
-    Kp = [Kp_n, Kp_n, Kp_n]
-    Kd = [Kd_n, Kd_n, Kd_n]
 
+    # PD tuning parameters
+    Kp = config['policy']['robot']['Kp_n']
+    Kd = config['policy']['robot']['Kd_n']
+    
     actions = torch.zeros(12, dtype=torch.float32)
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     # Decimation changed to 5 to have a 100 Hz main loop, like in the simulations
-    decimation = 5
-    mps = mps_code.MPS(decimation, max_pos, min_pos, torque_values_n, Kp_n, Kd_n, scaling_qdes, default_joint_angles, scaling_factors, config_value)
-    torque_values = np.zeros(12)
-    #state = sdk.LowState()
+    decimation = config['controller']['robot']['decimation']
+    mps = mps_code.MPS(decimation, torque_values_n, Kp, Kd, config_value, xml_path, lim_tau)
+
+    N_backup = 400 # Maximum number of iterations for the backup policy to be applied
+    i_backup = 0   # Counter for the number of times the backup policy has been applied
 
     motiontime = 0
-    nominal = True
+    nominal = True # Use the nominal policy at the beginning
 
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
     # Start the inference thread
@@ -285,15 +271,10 @@ if __name__ == '__main__':
     n_wait = 0
     while pubSub.cmd_pub.get_num_connections() < 1:
         n_wait += 1
-       # print(n_wait)
-        #pass
-    #print('after wait')
-    #time.sleep(2)
-    #pubSub.publish(np.zeros(12), np.zeros(12), np.zeros(12), Kp_n, Kd_n)
+       
     firstTime = True
 
     while not rospy.is_shutdown():
-       # print('while')
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
         The main loop for sending commands is running at 500Hz
@@ -301,9 +282,8 @@ if __name__ == '__main__':
         step_start = time.time()
         motiontime += 1
         
-        #imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel, pose, twist = pubSub.wait_for_all_messages()
-       # print('after wait_for_all_messages')
-        data_new = [pubSub.imu_acc,pubSub.imu_quat,pubSub.imu_gyro,pubSub.joint_pos,pubSub.joint_vel,pubSub.pose,pubSub.twist]
+        # Read data from ROS messages
+        data_new = [pubSub.imu_acc, pubSub.imu_quat, pubSub.imu_gyro, pubSub.joint_pos, pubSub.joint_vel, pubSub.pose, pubSub.twist]
         imu_acc = data_new[0]
         imu_quat = data_new[1]
         imu_gyro = data_new[2]
@@ -316,36 +296,24 @@ if __name__ == '__main__':
         if not simulator and check_safety_stops(pubSub.imu_quat):  # Using qpos to check inclination
             print("Safety condition triggered, disabling control gains")
             # Set Kp, Kd to 0 (disable control) for safety
-          #  Kp = [0, 0, 0]  # Set Kp to 0 for all joints
-          #  Kd = [0, 0, 0]  # Set Kd to 0 for all joints
             Kp = 0
             Kd = 0
-           # pubSub.publish(qDes, np.zeros(12), torque_values*4, 0, 0)
             exit()
 
         # First, record initial position
-        #'''
         if( motiontime >= 0 and motiontime < 1*(1/dt)):
-            Kp = 0
-            Kd = 0
             # Extract qInit values using dictionary keys
-            #qInit = [state_robot.motorState[d[key]].q for key in d]
-            qInit = [pubSub.joint_pos[i] for i in range(12) ]
+            qInit = [joint_pos[i] for i in range(12) ]
 
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
-            #exit()
-            Kp = Kp_n
-            Kd = Kd_n
             torque_values = torque_values_n
             rate_count += 1
             rate = rate_count / (5*(1/dt))
 
             # Here I don't switch the legs because the default joint angles are simmetric
-            #qDes = [jointLinearInterpolation(qInit[i], default_joint_angles[i], rate) for i in range(12)]
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
-            qDes = np.clip(qDes, min_pos, max_pos)#'''
-           # print(qDes)
+            qDes = np.clip(qDes, min_pos, max_pos)
 
         
         elif( motiontime >= 7*(1/dt)):# and is_rec):
@@ -353,54 +321,56 @@ if __name__ == '__main__':
                 print("START PRONTO!")
                 time.sleep(10.)
                 firstTime = False
-            #    print('scaling_factors',scaling_factors)
-            #    print('previous_actions',previous_actions)
-                print('after wait')                     
+
             if motiontime % decimation == 0:
-
-                '''
-                actor_network_copy = copy.deepcopy(actor_network)
-                new_actions1 = compute_actions(scaling_factors, previous_actions, nominal, actor_network_copy)
-                
-                # Compute torque using nominal policy       
-                # Check which policy should be used
-                is_rec = mps.is_rec_single(qDes, pubSub.pose, pubSub.twist, pubSub.joint_pos, pubSub.joint_vel, actor_network_copy, np.copy(current_actions), swap_legs(new_actions1))
-                is_rec = True
-                if not is_rec:
-                    nominal = False#'''
-
-                
+                # MPS check only if the backup has not been activated
                 #'''
+                if is_rec:
+                    # Compute torque using nominal policy using a copy of the network not to affect the original one
+                    actor_network_copy = copy.deepcopy(actor_network)
+                    new_actions1 = compute_actions(scaling_factors, previous_actions, nominal, actor_network_copy)
+                    
+                          
+                    # Compute qDes with the nominal policy
+                    qDes_check = scaling_qdes * swap_legs(new_actions1) + np.array(default_joint_angles)
+                    qDes_check = np.clip(qDes_check, min_pos, max_pos)
+
+                    # MPS
+                    is_rec = mps.is_rec_single(qDes_check, pose, twist, joint_pos, joint_vel, actor_network_copy, np.copy(current_actions), swap_legs(new_actions1))
+                    
+                    # Set to true to see how its computation affects the time without
+                    # switching policies
+                    is_rec = True
+                    if not is_rec:
+                        nominal = False
+                        i_backup += 1
+                else:
+                    i_backup += 1#'''
+                
+                # Compute actions with the selected policy
                 new_actions1 = compute_actions(scaling_factors, previous_actions, nominal, actor_network)
                 previous_actions = current_actions
-            # Trigger inference every `decimation` steps
-            
-                #inference_ready.set()
 
-                # Get the latest available actions
-                #with lock:  
+                # Get the latest available actions  
                 current_actions = swap_legs(new_actions1)
-                #print(scaling_qdes * current_actions + np.array(default_joint_angles))
+
+                # Switch back to the nominal policy after applying the backup for N_backup steps
+                if i_backup == N_backup:
+                        i_backup = 0
+                        is_rec = True
+                        nominal = True
                 
+            # Compute and clip the desired joint angles
             qDes = scaling_qdes * current_actions + np.array(default_joint_angles)
-
-            # Clip the joint angles to the joint limits
-            qDes = np.clip(qDes, min_pos, max_pos)#'''
-            #'''
-
-            # MPS check
+            qDes = np.clip(qDes, min_pos, max_pos)
           
-        
-        #time.sleep(0.02)
-        #print('before publish')
+        # Publish commands only after completing the phase in which the initial joint positions are collected
         if(motiontime >= 1*(1/dt)):
-            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp_n, Kd_n)
-            #print(motiontime)
-        #print('after publish')
+            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd)
+
         # Temporize the loop to maintain the desired frequency
         time_until_next_step = dt - (time.time() - step_start)
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
+
     rospy.spin()
-        # elapsed_time = time.time() - step_start  # Time taken for the loop iteration
-        # print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)")

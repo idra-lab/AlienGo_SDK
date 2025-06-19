@@ -3,7 +3,6 @@ import numpy as np
 from sensor_msgs.msg import Imu, JointState
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
 from nav_msgs.msg import Odometry
-import threading
 
 
 class PubSub():
@@ -13,33 +12,12 @@ class PubSub():
         self.joint_eff = np.zeros(12)
         self.qpos_order = np.zeros(12)
         self.qvel_order = np.zeros(12)
-        self.condition = threading.Condition()
-        self.command_received = False
 
     def callback_command(self, data):
-        with self.condition:
-            # Ordered as in MuJoCo
-            for i in range(12):
-                self.joint_pos[i] = data.position[i]
-                self.joint_vel[i] = data.velocity[i]
-                self.joint_eff[i] = data.effort[i]
-
-            self.command_received = True
-            self.condition.notify_all()
-
-    def wait_for_all_messages(self):
-        with self.condition:
-            # Wait until all three messages are received
-            while not (self.command_received):
-                self.condition.wait()
-
-            # Copy messages to return safely
-            msgs = (self.joint_pos, self.joint_vel, self.joint_eff)
-
-            # Reset flags for next round
-            self.command_received = False
-
-            return msgs
+        for i in range(12):
+            self.joint_pos[i] = data.position[i]
+            self.joint_vel[i] = data.velocity[i]
+            self.joint_eff[i] = data.effort[i]
         
     def init_subscribers(self):
         self.joint_state_sub = rospy.Subscriber('/command', JointState, self.callback_command)
