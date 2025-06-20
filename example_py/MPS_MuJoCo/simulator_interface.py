@@ -42,8 +42,6 @@ class MujocoSim():
            self.data.xfrc_applied[self.force_body][2] = 0*160
         else:
             self.data.xfrc_applied[self.force_body][2] = 0
-
-        step_start = time.time()
         
         if np.any(self.qDes != np.zeros(12)):
             
@@ -65,12 +63,6 @@ class MujocoSim():
                          self.data.sensor('Body_Quat').data.copy(), 
                          self.data.sensor('Body_Acc').data.copy(),
                          self.data.qpos[:7], self.data.qvel[:6])
-        
-        # Wait for the time the control action was simulated
-        time_until_next_step = self.model.opt.timestep - (time.time() - step_start)
-        if time_until_next_step > 0:
-            time.sleep(time_until_next_step)
-        
 
 
 if __name__ == '__main__':
@@ -94,9 +86,11 @@ if __name__ == '__main__':
             pass
         
         iter_loop = 0
+        rate = rospy.Rate(500)
         while not rospy.is_shutdown():
             mujoco_sim.simulate(100, 3, viewer_muj, renderer, iter_loop)
             iter_loop += 1
+            rate.sleep()
     except Exception as e:
         print(e)
         rospy.signal_shutdown("killed")

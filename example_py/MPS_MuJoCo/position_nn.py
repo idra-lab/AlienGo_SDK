@@ -1,13 +1,11 @@
 #!/usr/bin/python
 
-import sys
-import time
-import math
 import numpy as np
 import torch
 import mps_code
 import copy
 import rospy
+import roslaunch
 import publish_subscribe
 from sensor_msgs.msg import Imu, JointState
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
@@ -23,8 +21,6 @@ import os
 os.environ["XLA_FLAGS"] = os.environ.get("XLA_FLAGS", "") + " --xla_gpu_triton_gemm_any=True"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
-
-simulator = True
 
 ### Configuration and setup of neural networks
 
@@ -52,18 +48,53 @@ config_value = mps_code.load_value(config['policy']['paths']['value_function'])
 
 ## Shared variables
 # For actions
+lock = threading.Lock()
+latest_actions = np.zeros(12)  # Store the latest actions safely across threads
+current_actions = np.zeros(12)  # Store the current actions to be sent to the robot
 previous_actions = np.zeros(12)  # Store the previous actions
-current_actions = np.zeros(12)  # Store current actions
+inference_ready = threading.Event()  # Event to signal new inference results
+stop_threads = False  # Flag to stop threads gracefully
 
 # For ROS messages from the robot
-torque_values = np.zeros(12)
-imu_acc = np.zeros(3)
-imu_quat = np.zeros(4)
-imu_gyro = np.zeros(3)
-joint_pos = np.zeros(12)
-joint_vel = np.zeros(12)
-pose = np.zeros(7)
-twist = np.zeros(6)
+torque_values = [np.zeros(12)]
+imu_acc = [np.zeros(3)]
+imu_quat = [np.zeros(4)]
+imu_gyro = [np.zeros(3)]
+joint_pos = [np.zeros(12)]
+joint_vel = [np.zeros(12)]
+pose = [np.zeros(7)]
+twist = [np.zeros(6)]
+
+# Initialize as recoverable
+is_rec = [True]
+
+nominal = [True] # Use the nominal policy at the beginning
+
+N_backup = 400 # Maximum number of iterations for the backup policy to be applied
+i_backup = 0   # Counter for the number of times the backup policy has been applied
+
+motiontime = 0
+
+joystick_use = False
+
+
+class ProntoThread(threading.Thread):
+    def __init__(self, group = None, target = None, name = None, args = ..., kwargs = None, *, daemon = None):
+        super().__init__(group, target, name, args, kwargs, daemon=daemon)
+
+        uuid = roslaunch.rlutil.get_or_generate_uuid(None, False)
+        roslaunch.configure_logging(uuid)
+        self.launch = roslaunch.parent.ROSLaunchParent(uuid, ["/home/aliengo_ws/catkin_ws/src/git/pronto_aliengo/pronto_aliengo/launch/pronto_aliengo.launch"])
+        self.launch = roslaunch.scriptapi.ROSLaunch()
+
+    def run(self):
+        print("HERE WE GO")
+        self.launch.start()        
+
+    def join(self):
+        print("TIME TO DIE")
+        self.launch.stop()
+
 
 def get_commands(): 
     """
@@ -118,7 +149,7 @@ def get_safety_button():
        
     return False
 
-def compute_observation(scaling_factors, prev_actions1, nominal) -> np.ndarray:
+def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
     """
     Compute the observation vector from the robot's state.
     Legs are swapped to match the order of the neural network input.
@@ -126,10 +157,20 @@ def compute_observation(scaling_factors, prev_actions1, nominal) -> np.ndarray:
     nn order = [FL, FR, RL, RR]
     """    
     # Send specific commands instead of using the controller
-    if nominal:
-        commands = np.array([0.,0.,0.])
-    else:
-        commands = np.array([-0.45, -0.02, 0.])
+    if joystick_use:
+        commands = get_commands()
+    else:    
+        if nominal:
+            commands = np.array([0.,0.,0.])
+        else:
+            commands = np.array([-0.45, -0.02, 0.])
+
+    commands = np.array([-0.45, -0.02, 0.])
+
+    imu_quat = state[1]
+    imu_gyro = state[2]
+    joint_pos = state[3]
+    joint_vel = state[4]
     
     body_quat = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
     body_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
@@ -159,22 +200,81 @@ def compute_observation(scaling_factors, prev_actions1, nominal) -> np.ndarray:
     # Concatenate into a single observation vector
     return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles, scaled_joint_velocities, scaled_actions))
 
-def compute_actions(scaling_factors, previous_actions, nominal, actor_network) -> np.ndarray:
-
+def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:    
     """
     Inference on the NN to retrive actions from observations.
     Legs are swapped to match the order of the neural network input.
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    obs = compute_observation(scaling_factors, previous_actions, nominal)
-    obs_tensor = torch.tensor(obs, dtype=torch.float32)
-    obs_normalized = actor_network.norm_obs(obs_tensor)
+    global latest_actions, previous_actions, stop_threads, i_backup
 
-    with torch.no_grad():
-        new_actions1 = actor_network(obs_normalized).numpy()
+    print('[ ', motiontime, '] first time in compute actions ... ',data_new[3])
     
-    return new_actions1
+    num_thread = 0
+    while not stop_threads:
+    #    print('[ ', motiontime, '] while loop in compute actions before wait ... ',data_new[3])#,data_new[3])
+        inference_ready.wait()  # Wait for signal from the main thread
+        inference_ready.clear()
+     #   print('[ ', motiontime, '] while loop in compute actions after wait ... ')#,data_new[3])
+        # MPS check only if the backup has not been activated
+        '''
+        if is_rec[0]:
+            # Compute torque using nominal policy using a copy of the network not to affect the original one
+            actor_network_copy = copy.deepcopy(actor_network)
+
+            obs = compute_observation(data_new, scaling_factors, nominal[0])
+            obs_tensor = torch.tensor(obs, dtype=torch.float32)
+            obs_normalized = actor_network_copy.norm_obs(obs_tensor)
+
+            with torch.no_grad():
+                new_actions_numpy = actor_network_copy(obs_normalized).numpy()
+            
+                    
+            # Compute qDes with the nominal policy
+            qDes_check = scaling_qdes * swap_legs(new_actions_numpy) + np.array(default_joint_angles)
+            qDes_check = np.clip(qDes_check, min_pos, max_pos)
+
+            # MPS
+            is_rec[0] = mps.is_rec_single(qDes_check, data_new[5], data_new[6], data_new[3], data_new[4])
+            
+            # Set to true to see how its computation affects the time without
+            # switching policies
+            is_rec[0] = True
+            if not is_rec[0]:
+                print('not is rec')
+                nominal[0] = False
+                i_backup += 1
+        else:
+            i_backup += 1#'''
+        
+        # Compute actions with the selected policy
+        
+        obs = compute_observation(data_new, scaling_factors, nominal[0])
+        obs_tensor = torch.tensor(obs, dtype=torch.float32)
+        obs_normalized = actor_network.norm_obs(obs_tensor)
+
+
+        with torch.no_grad():
+            new_actions_numpy = actor_network(obs_normalized).numpy()
+
+        new_actions = swap_legs(new_actions_numpy)
+      #  print("latest actions in compute actions BEFORE writing to global variable:",motiontime)#, latest_actions)
+
+        with lock:
+            previous_actions[:] = latest_actions  # Store current actions as previous
+            latest_actions[:] = new_actions  # Update latest actions
+
+       # print("latest actions in compute actions AFTER writing to global variable:",motiontime)#, latest_actions)
+
+        # Switch back to the nominal policy after applying the backup for N_backup steps
+        if i_backup == N_backup:
+                i_backup = 0
+                is_rec[0] = True
+                nominal[0] = True
+
+  #  print('compute actions finished')
+
 
 def jointLinearInterpolation(initPos, targetPos, rate) -> np.ndarray:
     """
@@ -201,7 +301,7 @@ def check_safety_stops(imu_quat) -> bool:
         return True
     else:
         return False
-
+    
 if __name__ == '__main__':
     # Initialize pygame and the joystick module if the real robot is used
     if not simulator:
@@ -223,8 +323,7 @@ if __name__ == '__main__':
     pubSub.init_publisher(config['controller']['topics'])
     pubSub.init_subscribers(config['controller']['topics'])
 
-    # Initialize as recoverable
-    is_rec = True
+    
 
     d = {'FR_0':0, 'FR_1': 1, 'FR_2': 2,
          'FL_0':3, 'FL_1': 4, 'FL_2': 5, 
@@ -235,7 +334,7 @@ if __name__ == '__main__':
     joints = ['_0', '_1', '_2']
 
     # Creates a 12-element list with the default joint angles for the standup
-    q0 = 4*[0.0, 0.7, -1.5] 
+    q0 = default_joint_angles
     dt = 0.002
 
     # Initial joint position, typically when the robot is on the ground
@@ -263,41 +362,36 @@ if __name__ == '__main__':
     decimation = config['controller']['robot']['decimation']
     mps = mps_code.MPS(decimation, torque_values_n, Kp, Kd, config_value, xml_path, lim_tau)
 
-    N_backup = 400 # Maximum number of iterations for the backup policy to be applied
-    i_backup = 0   # Counter for the number of times the backup policy has been applied
-
-    motiontime = 0
-    nominal = True # Use the nominal policy at the beginning
+    
 
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
     # Start the inference thread
-    #threading.Thread(target=compute_actions, args=(scaling_factors,), daemon=True).start()
+   
     n_wait = 0
     while pubSub.cmd_pub.get_num_connections() < 1:
         n_wait += 1
        
     firstTime = True
-    rate = rospy.Rate(1 / dt)  # 500 Hz for dt = 0.002
+    data_new = [np.zeros(3), np.zeros(4), np.zeros(3), np.zeros(12), np.zeros(12), np.zeros(7), np.zeros(6)]
+    threading.Thread(target=compute_actions, args=(scaling_factors, nominal, is_rec), daemon=True).start()
+    #pronto_thread = ProntoThread()
+    rate_ros = rospy.Rate(500)  # 500 Hz for dt = 0.002
     while not rospy.is_shutdown():
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
         The main loop for sending commands is running at 500Hz
         """
         motiontime += 1
-        
+     #   print("state in main before copying from pubsub",motiontime)#, data_new)
         # Read data from ROS messages
         data_new = [pubSub.imu_acc, pubSub.imu_quat, pubSub.imu_gyro, pubSub.joint_pos, pubSub.joint_vel, pubSub.pose, pubSub.twist]
-        imu_acc = data_new[0]
-        imu_quat = data_new[1]
-        imu_gyro = data_new[2]
-        joint_pos = data_new[3]
-        joint_vel = data_new[4]
-        pose = data_new[5]
-        twist = data_new[6]
+     #   print("state in main AFTER copying from pubsub",motiontime)#, data_new)
 
+     #   print('data_new[3]',data_new[3])
+     #   print('pubSub.joint_pos',pubSub.joint_pos)
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
         if not simulator and check_safety_stops(pubSub.imu_quat):  # Using qpos to check inclination
-            print("Safety condition triggered, disabling control gains")
+            print("Safety condition triggered, disabling control gains",motiontime)
             # Set Kp, Kd to 0 (disable control) for safety
             Kp = 0
             Kd = 0
@@ -306,62 +400,44 @@ if __name__ == '__main__':
         # First, record initial position
         if( motiontime >= 0 and motiontime < 1*(1/dt)):
             # Extract qInit values using dictionary keys
-            qInit = [joint_pos[i] for i in range(12) ]
+      #     print('[ ', motiontime, '] getting qInit ... ')#,data_new[3])
+            qInit = [data_new[3][i] for i in range(12) ]
+       #     print('qInit',qInit)
 
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
+           # exit()
             torque_values = torque_values_n
             rate_count += 1
             rate = rate_count / (5*(1/dt))
-
+       #     print('[ ', motiontime, '] standing up  ... ')#,data_new[3])
             # Here I don't switch the legs because the default joint angles are simmetric
             qDes = [jointLinearInterpolation(qInit[i], q0[i], rate) for i in range(12)]
             qDes = np.clip(qDes, min_pos, max_pos)
+       #     print('qDes', qDes)
 
         
-        elif( motiontime >= 7*(1/dt)):# and is_rec):
+        elif( motiontime >= 7*(1/dt) and motiontime < 17*(1/dt)):
+            #exit()
             if firstTime:
-                print("START PRONTO!")
-                time.sleep(10.)
+                print('STARTING PRONTO IN SEPARATE THREAD!!')
+             #   pronto_thread.run()
                 firstTime = False
 
+        elif( motiontime >= 17*(1/dt)):
             if motiontime % decimation == 0:
-                # MPS check only if the backup has not been activated
-                #'''
-                if is_rec:
-                    # Compute torque using nominal policy using a copy of the network not to affect the original one
-                    actor_network_copy = copy.deepcopy(actor_network)
-                    new_actions1 = compute_actions(scaling_factors, previous_actions, nominal, actor_network_copy)
-                    
-                          
-                    # Compute qDes with the nominal policy
-                    qDes_check = scaling_qdes * swap_legs(new_actions1) + np.array(default_joint_angles)
-                    qDes_check = np.clip(qDes_check, min_pos, max_pos)
-
-                    # MPS
-                    is_rec = mps.is_rec_single(qDes_check, pose, twist, joint_pos, joint_vel, actor_network_copy, np.copy(current_actions), swap_legs(new_actions1))
-                    
-                    # Set to true to see how its computation affects the time without
-                    # switching policies
-                    is_rec = True
-                    if not is_rec:
-                        nominal = False
-                        i_backup += 1
-                else:
-                    i_backup += 1#'''
+               # print('[ ', motiontime, ' ] decimation!')
+                inference_ready.set()
                 
-                # Compute actions with the selected policy
-                new_actions1 = compute_actions(scaling_factors, previous_actions, nominal, actor_network)
-                previous_actions = current_actions
 
-                # Get the latest available actions  
-                current_actions = swap_legs(new_actions1)
+        #    print("latest actions in main before deep copy:",motiontime)#, latest_actions)
+        #    print("current actions in main before deep copy:",motiontime)#, current_actions)
 
-                # Switch back to the nominal policy after applying the backup for N_backup steps
-                if i_backup == N_backup:
-                        i_backup = 0
-                        is_rec = True
-                        nominal = True
+            # Get the latest available actions 
+            with lock: 
+                current_actions = np.copy(latest_actions)
+
+         #   print("current actions in main AFTER deep copy:",motiontime)#, current_actions)
                 
             # Compute and clip the desired joint angles
             qDes = scaling_qdes * current_actions + np.array(default_joint_angles)
@@ -372,6 +448,8 @@ if __name__ == '__main__':
             pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd)
 
         # Temporize the loop to maintain the desired frequency
-        rate.sleep()
+        rate_ros.sleep()
 
     rospy.spin()
+   # pronto_thread.join()
+    

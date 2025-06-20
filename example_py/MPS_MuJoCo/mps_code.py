@@ -77,7 +77,7 @@ class MPS:
         # Create object to evaluate the value function
         self.critic_network = CriticEvaluator(self.critic_model, self.params)
 
-    def is_rec_single(self, qDes, pose, twist, joint_pos, joint_vel, sim_nn, previous_actions, current_actions):
+    def is_rec_single(self, qDes, pose, twist, joint_pos, joint_vel):
 
         # Define initial data for simulation
         self.data.qpos = np.concatenate((pose, joint_pos))
@@ -140,6 +140,8 @@ class MPS:
         V_safe = critic_inference(self.critic_model, self.critic_network.params, obs_flax)
 
         if V_safe > threshold:
+          #  print(f"\033[92mV_safe: {V_safe:.4f}\033[0m")
             return True
         else:
+          #  print(f"\033[91mV_safe: {V_safe:.4f}\033[0m")
             return False
