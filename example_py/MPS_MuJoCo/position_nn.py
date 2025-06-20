@@ -11,7 +11,7 @@ import rospy
 import publish_subscribe
 from sensor_msgs.msg import Imu, JointState
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
-import message_filters
+
 
 # Neural network and configuration imports
 from config_loader import load_config, load_actor_network
@@ -118,7 +118,7 @@ def get_safety_button():
        
     return False
 
-def compute_observation(scaling_factors, prev_actions1, nominal):
+def compute_observation(scaling_factors, prev_actions1, nominal) -> np.ndarray:
     """
     Compute the observation vector from the robot's state.
     Legs are swapped to match the order of the neural network input.
@@ -159,7 +159,7 @@ def compute_observation(scaling_factors, prev_actions1, nominal):
     # Concatenate into a single observation vector
     return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles, scaled_joint_velocities, scaled_actions))
 
-def compute_actions(scaling_factors, previous_actions, nominal, actor_network):
+def compute_actions(scaling_factors, previous_actions, nominal, actor_network) -> np.ndarray:
 
     """
     Inference on the NN to retrive actions from observations.
@@ -176,7 +176,7 @@ def compute_actions(scaling_factors, previous_actions, nominal, actor_network):
     
     return new_actions1
 
-def jointLinearInterpolation(initPos, targetPos, rate):
+def jointLinearInterpolation(initPos, targetPos, rate) -> np.ndarray:
     """
     Performs a linear interpolation between initial and target joint positions.
     """
@@ -184,7 +184,7 @@ def jointLinearInterpolation(initPos, targetPos, rate):
     p = initPos*(1-rate) + targetPos*rate
     return p
 
-def check_safety_stops(imu_quat):
+def check_safety_stops(imu_quat) -> bool:
     """
     Check if the inclination of the robot base exceeds the threshold (pi/8) and checks the safety button as well.
     """
@@ -218,6 +218,7 @@ if __name__ == '__main__':
 
     # ROS communication
     rospy.init_node('communicate_aliengo')
+    
     pubSub = publish_subscribe.PubSub()
     pubSub.init_publisher(config['controller']['topics'])
     pubSub.init_subscribers(config['controller']['topics'])
@@ -233,14 +234,17 @@ if __name__ == '__main__':
     legs = ['FR', 'FL', 'RR', 'RL']
     joints = ['_0', '_1', '_2']
 
-    sin_mid_q = 4*[0.0, 0.7, -1.5] # Creates a 12-element list with the default joint angles for the standup
+    # Creates a 12-element list with the default joint angles for the standup
+    q0 = 4*[0.0, 0.7, -1.5] 
     dt = 0.002
 
+    # Initial joint position, typically when the robot is on the ground
     qInit = [0, 0, 0,
              0, 0, 0,
              0, 0, 0,
              0, 0, 0]
     
+    # Desired joint position, will be sent to the robot's PD controller
     qDes = [0, 0, 0,
             0, 0, 0,
             0, 0, 0,
@@ -273,13 +277,12 @@ if __name__ == '__main__':
         n_wait += 1
        
     firstTime = True
-
+    rate = rospy.Rate(1 / dt)  # 500 Hz for dt = 0.002
     while not rospy.is_shutdown():
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
         The main loop for sending commands is running at 500Hz
         """
-        step_start = time.time()
         motiontime += 1
         
         # Read data from ROS messages
@@ -312,7 +315,7 @@ if __name__ == '__main__':
             rate = rate_count / (5*(1/dt))
 
             # Here I don't switch the legs because the default joint angles are simmetric
-            qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
+            qDes = [jointLinearInterpolation(qInit[i], q0[i], rate) for i in range(12)]
             qDes = np.clip(qDes, min_pos, max_pos)
 
         
@@ -369,8 +372,6 @@ if __name__ == '__main__':
             pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd)
 
         # Temporize the loop to maintain the desired frequency
-        time_until_next_step = dt - (time.time() - step_start)
-        if time_until_next_step > 0:
-            time.sleep(time_until_next_step)
+        rate.sleep()
 
     rospy.spin()
