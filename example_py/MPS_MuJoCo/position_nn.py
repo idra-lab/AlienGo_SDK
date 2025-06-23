@@ -9,7 +9,7 @@ import roslaunch
 import publish_subscribe
 from sensor_msgs.msg import Imu, JointState
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
-
+import time
 
 # Neural network and configuration imports
 from config_loader import load_config, load_actor_network
@@ -64,6 +64,9 @@ joint_pos = [np.zeros(12)]
 joint_vel = [np.zeros(12)]
 pose = [np.zeros(7)]
 twist = [np.zeros(6)]
+
+meas_time = []
+meas_time2 = []
 
 # Initialize as recoverable
 is_rec = [True]
@@ -165,7 +168,9 @@ def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
         else:
             commands = np.array([-0.45, -0.02, 0.])
 
-    commands = np.array([-0.45, -0.02, 0.])
+    #commands = np.array([-0.45, 0.02, 0.])
+
+    commands = np.array([0.,0.,0.])
 
     imu_quat = state[1]
     imu_gyro = state[2]
@@ -209,7 +214,7 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
     """
     global latest_actions, previous_actions, stop_threads, i_backup
 
-    print('[ ', motiontime, '] first time in compute actions ... ',data_new[3])
+    #print('[ ', motiontime, '] first time in compute actions ... ',data_new[3])
     
     num_thread = 0
     while not stop_threads:
@@ -218,26 +223,32 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
         inference_ready.clear()
      #   print('[ ', motiontime, '] while loop in compute actions after wait ... ')#,data_new[3])
         # MPS check only if the backup has not been activated
-        '''
+        #'''
         if is_rec[0]:
             # Compute torque using nominal policy using a copy of the network not to affect the original one
-            actor_network_copy = copy.deepcopy(actor_network)
+            #actor_network_copy = copy.deepcopy(actor_network)
+            strt_time = time.time()
+            running_mean = copy.copy(actor_network.running_mean_std.running_mean)
+            running_var = copy.copy(actor_network.running_mean_std.running_var)
+            count = copy.copy(actor_network.running_mean_std.count)
 
-            obs = compute_observation(data_new, scaling_factors, nominal[0])
+            obs = compute_observation(data_new, scaling_factors, True)
             obs_tensor = torch.tensor(obs, dtype=torch.float32)
-            obs_normalized = actor_network_copy.norm_obs(obs_tensor)
+            #obs_normalized = actor_network_copy.norm_obs(obs_tensor)
+            obs_normalized = actor_network.norm_obs(obs_tensor)
 
             with torch.no_grad():
-                new_actions_numpy = actor_network_copy(obs_normalized).numpy()
-            
-                    
+                #new_actions_numpy = actor_network_copy(obs_normalized).numpy()
+                new_actions_numpy = actor_network(obs_normalized).numpy()
+
             # Compute qDes with the nominal policy
             qDes_check = scaling_qdes * swap_legs(new_actions_numpy) + np.array(default_joint_angles)
             qDes_check = np.clip(qDes_check, min_pos, max_pos)
-
+            meas_time.append(time.time()-strt_time)
+            strt_time = time.time()
             # MPS
             is_rec[0] = mps.is_rec_single(qDes_check, data_new[5], data_new[6], data_new[3], data_new[4])
-            
+            meas_time2.append(time.time()-strt_time)
             # Set to true to see how its computation affects the time without
             # switching policies
             is_rec[0] = True
@@ -245,21 +256,32 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
                 print('not is rec')
                 nominal[0] = False
                 i_backup += 1
+                actor_network.running_mean_std.running_mean = running_mean
+                actor_network.running_mean_std.running_var = running_var
+                actor_network.running_mean_std.count = count
+
+                obs = compute_observation(data_new, scaling_factors, False)
+                obs_tensor = torch.tensor(obs, dtype=torch.float32)
+                obs_normalized = actor_network.norm_obs(obs_tensor)
+
+
+                with torch.no_grad():
+                    new_actions_numpy = actor_network(obs_normalized).numpy()
         else:
-            i_backup += 1#'''
+            i_backup += 1
         
         # Compute actions with the selected policy
-        
-        obs = compute_observation(data_new, scaling_factors, nominal[0])
-        obs_tensor = torch.tensor(obs, dtype=torch.float32)
-        obs_normalized = actor_network.norm_obs(obs_tensor)
+
+            obs = compute_observation(data_new, scaling_factors, False)
+            obs_tensor = torch.tensor(obs, dtype=torch.float32)
+            obs_normalized = actor_network.norm_obs(obs_tensor)
 
 
-        with torch.no_grad():
-            new_actions_numpy = actor_network(obs_normalized).numpy()
+            with torch.no_grad():
+                new_actions_numpy = actor_network(obs_normalized).numpy()
 
         new_actions = swap_legs(new_actions_numpy)
-      #  print("latest actions in compute actions BEFORE writing to global variable:",motiontime)#, latest_actions)
+      #  print("latest actions in compute actions BEFORE writing to global variable:",motiontime)#, latest_actions)#'''
 
         with lock:
             previous_actions[:] = latest_actions  # Store current actions as previous
@@ -272,6 +294,7 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
                 i_backup = 0
                 is_rec[0] = True
                 nominal[0] = True
+        
 
   #  print('compute actions finished')
 
@@ -376,7 +399,7 @@ if __name__ == '__main__':
     threading.Thread(target=compute_actions, args=(scaling_factors, nominal, is_rec), daemon=True).start()
     #pronto_thread = ProntoThread()
     rate_ros = rospy.Rate(500)  # 500 Hz for dt = 0.002
-    while not rospy.is_shutdown():
+    while not rospy.is_shutdown() and motiontime < 20000:
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
         The main loop for sending commands is running at 500Hz
@@ -450,6 +473,11 @@ if __name__ == '__main__':
         # Temporize the loop to maintain the desired frequency
         rate_ros.sleep()
 
-    rospy.spin()
+    #rospy.spin()
    # pronto_thread.join()
+    print('nn', sum(meas_time)/len(meas_time))
+    print('mps', sum(meas_time2)/len(meas_time2))
+    print('mujoco', sum(mps.time1)/len(mps.time1))
+    print('value function', sum(mps.time2)/len(mps.time2))
+    
     

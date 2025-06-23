@@ -2,6 +2,7 @@ import numpy as np
 import mujoco
 import torch
 from utils import quat_rotate_inverse
+import time
 
 # Value function network load
 import flax.linen as nn_flax
@@ -68,7 +69,10 @@ class MPS:
         # Model robot using MuJoCo for the MPS loop
         self.model, self.data = modelData(xml_path)
         self.setup_value_function()
-
+        value_fnc_result = self.computeValueFnc(0.3)
+        self.time1 = []
+        self.time2 = []
+ 
     def setup_value_function(self):
         # Setup value function network
         self.critic_model = CriticNetwork()
@@ -78,7 +82,7 @@ class MPS:
         self.critic_network = CriticEvaluator(self.critic_model, self.params)
 
     def is_rec_single(self, qDes, pose, twist, joint_pos, joint_vel):
-
+        start_time = time.time()
         # Define initial data for simulation
         self.data.qpos = np.concatenate((pose, joint_pos))
         self.data.qvel = np.concatenate((twist, joint_vel))
@@ -93,10 +97,12 @@ class MPS:
             mujoco.mj_step(self.model, self.data)
             q_muj = self.data.qpos.copy()
             v_muj = self.data.qvel.copy()
-        
+        self.time1.append(time.time()-start_time)
+        start_time = time.time()
         threshold = 0.3
-
+        #time_fnc = time.time()
         value_fnc_result = self.computeValueFnc(threshold)
+        self.time2.append(time.time()-start_time)
         return value_fnc_result
 
     def swap_legs(self, array):
