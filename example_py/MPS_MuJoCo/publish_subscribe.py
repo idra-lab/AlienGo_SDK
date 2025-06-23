@@ -3,6 +3,7 @@ import numpy as np
 from sensor_msgs.msg import Imu, JointState
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
 from nav_msgs.msg import Odometry
+from unitree_legged_msgs.msg import JointStateWithGains
 
 class PubSub():
     def __init__(self):
@@ -14,13 +15,12 @@ class PubSub():
         self.joint_vel = np.zeros(12)
         self.pose = np.zeros(7)
         self.twist = np.zeros(6)
-        self.joint_state_des = JointState()
+        self.joint_state_des = JointStateWithGains()
 
-        self.joint_state_des.name = ["FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+        self.joint_state_des.cmd.name = ["FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
                                      "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",                                     
                                      "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint", 
-                                     "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
-                                     "gains"] # Fake 13th joint to store gains
+                                     "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint"]
 
     def callback_imu(self, msg):
         # Timestamp
@@ -90,15 +90,15 @@ class PubSub():
         self.odom_sub = rospy.Subscriber(config_topics['odometry'], Odometry, self.odom_callback)
         
     def init_publisher(self, config_topics):
-        self.cmd_pub = rospy.Publisher(config_topics['command'], JointState, queue_size=10)
+        self.cmd_pub = rospy.Publisher(config_topics['command'], JointStateWithGains, queue_size=10)
 
     def publish(self, qpos, qvel, eff, Kp, Kd):
         try:
-            self.joint_state_des.position = np.concatenate((qpos, [Kp])) # store Kp on the fake joint pos
-            self.joint_state_des.velocity = np.concatenate((qvel, [Kd])) # store Kd on the fake joint vel
-            
-            # concatenate a zero to maintain size to 13
-            self.joint_state_des.effort = np.concatenate((eff, [0])) 
+            self.joint_state_des.cmd.position = qpos  # store Kp on the fake joint pos
+            self.joint_state_des.cmd.velocity = qvel # store Kd on the fake joint vel                        
+            self.joint_state_des.cmd.effort = eff
+            self.joint_state_des.Kp = 12 * [Kp] # same gains for all joints
+            self.joint_state_des.Kd = 12 * [Kd] # same gains for all joints
             self.cmd_pub.publish(self.joint_state_des)
         except rospy.ROSInterruptException:
             pass

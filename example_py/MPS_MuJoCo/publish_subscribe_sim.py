@@ -1,6 +1,7 @@
 import rospy
 import numpy as np
 from sensor_msgs.msg import Imu, JointState
+from unitree_legged_msgs.msg import JointStateWithGains
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
 from nav_msgs.msg import Odometry
 
@@ -15,12 +16,12 @@ class PubSub():
 
     def callback_command(self, data):
         for i in range(12):
-            self.joint_pos[i] = data.position[i]
-            self.joint_vel[i] = data.velocity[i]
-            self.joint_eff[i] = data.effort[i]
+            self.joint_pos[i] = data.cmd.position[i]
+            self.joint_vel[i] = data.cmd.velocity[i]
+            self.joint_eff[i] = data.cmd.effort[i]
         
     def init_subscribers(self):
-        self.joint_state_sub = rospy.Subscriber('/command', JointState, self.callback_command)
+        self.joint_state_sub = rospy.Subscriber('/command', JointStateWithGains, self.callback_command)
         
     def init_publishers(self):
         self.imu_data_pub = rospy.Publisher('/aliengo_ros/imu', Imu, queue_size=10)
