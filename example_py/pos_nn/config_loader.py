@@ -2,18 +2,12 @@ import yaml
 import torch
 import torch.nn as nn
 from rl_games.algos_torch.running_mean_std import RunningMeanStd
-#import pickle
 
 
 # Function to load YAML configuration
 def load_config(file_path):
     with open(file_path, 'r') as file:
         return yaml.safe_load(file)
-    
-# Function to load value function
-'''def load_value(file_path):
-    with open(file_path, 'rb') as f:
-        return pickle.load(f)'''
 
 
 # Actor Network Class
@@ -41,11 +35,11 @@ class ActorNetwork(nn.Module):
 
 
 # Function to load the actor network
-def load_actor_network(network_path):
+def load_actor_network(config):
     input_dim = 45
     action_dim = 12
     actor_network = ActorNetwork(input_dim=input_dim, action_dim=action_dim)
-    state_dict = torch.load(network_path, map_location=torch.device('cpu'), weights_only=False)['model']
+    state_dict = torch.load(config['paths']['checkpoint_path'], map_location=torch.device('cpu'), weights_only=False)['model']
     actor_state_dict = {k.replace('a2c_network.', ''): v for k, v in state_dict.items()
                         if k.startswith('a2c_network.actor_mlp') or k.startswith('a2c_network.mu')or k.startswith('running_mean_std.running_mean') or k.startswith('running_mean_std.running_var') or k.startswith('running_mean_std.count')}
     actor_network.load_state_dict(actor_state_dict)

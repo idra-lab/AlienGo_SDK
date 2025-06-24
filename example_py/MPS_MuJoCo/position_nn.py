@@ -44,7 +44,7 @@ scaling_qdes = scaling_factors['factor']
 xml_path = config['controller']['robot']['model']
 
 # Value function
-config_value = mps_code.load_value(config['policy']['paths']['value_function'])
+#config_value = mps_code.load_value(config['policy']['paths']['value_function'])
 
 ## Shared variables
 # For actions
@@ -166,6 +166,7 @@ def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
             commands = np.array([-0.45, -0.02, 0.])
 
     commands = np.array([-0.45, -0.02, 0.])
+    commands = np.array([0., 0., 0.])
 
     imu_quat = state[1]
     imu_gyro = state[2]
@@ -360,7 +361,7 @@ if __name__ == '__main__':
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     # Decimation changed to 5 to have a 100 Hz main loop, like in the simulations
     decimation = config['controller']['robot']['decimation']
-    mps = mps_code.MPS(decimation, torque_values_n, Kp, Kd, config_value, xml_path, lim_tau)
+    #mps = mps_code.MPS(decimation, torque_values_n, Kp, Kd, config_value, xml_path, lim_tau)
 
     
 
@@ -393,8 +394,9 @@ if __name__ == '__main__':
         if not simulator and check_safety_stops(pubSub.imu_quat):  # Using qpos to check inclination
             print("Safety condition triggered, disabling control gains",motiontime)
             # Set Kp, Kd to 0 (disable control) for safety
-            Kp = 0
-            Kd = 0
+            Kp = 10
+            Kd = 0.3
+            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd)
             exit()
 
         # First, record initial position
@@ -425,6 +427,7 @@ if __name__ == '__main__':
                 firstTime = False
 
         elif( motiontime >= 17*(1/dt)):
+            #exit()
             if motiontime % decimation == 0:
                # print('[ ', motiontime, ' ] decimation!')
                 inference_ready.set()
