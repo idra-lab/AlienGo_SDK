@@ -170,6 +170,7 @@ def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
             commands = np.array([-0.45, -0.02, 0.])
 
     commands = np.array([-0.45, -0.02, 0.0])
+    commands = get_commands()
 
     #commands = np.array([0.,0.,0.])
 
