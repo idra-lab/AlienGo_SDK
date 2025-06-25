@@ -35,8 +35,8 @@ policy:
 
 controller:
   robot:
-    simulator: True
-    joystick: False
+    simulator: False
+    joystick: True
     model: ../aliengo_models/xml/aliengo.xml
     decimation: 5
   topics:
@@ -44,5 +44,6 @@ controller:
     joint_states: /joint_states
     odometry: /state_estimator_pronto/odom
     command: /command
+    value_function: /value_function
 
 

@@ -29,7 +29,7 @@ scaling_factors = config['policy']['scaling']
 default_joint_angles = config['policy']['robot']['default_joint_angles']
 
 
-if not use_simulator:
+if True:
     # Initialize pygame and the joystick module
     pygame.init()
     pygame.joystick.init()
@@ -111,6 +111,8 @@ def compute_observation(imu_quat, imu_gyro, joint_pos, joint_vel, scaling_factor
     else:
         commands = np.array([0.,0.,0.])
 
+    commands = np.array([0., 0., 0.0])
+
     body_quat = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
     body_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
     joint_angles1 = [joint_pos[i] for i in range(12)]
@@ -182,7 +184,7 @@ def check_safety_stops(imu_quat):
     """
     Check if the inclination of the robot base exceeds the threshold (pi/8) and checks the safety button as well.
     """
-    body_quat = imu_quat  # Quaternion from qpos
+    body_quat = imu_quat[0]  # Quaternion from qpos
     # Calculate inclination using arcsin formula
     inclination = 2 * np.arcsin(np.sqrt(body_quat[1]**2 + body_quat[2]**2))
 
@@ -271,11 +273,12 @@ if __name__ == '__main__':
         joint_vel[0] = data_new[4]
 
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
-        if not use_simulator and check_safety_stops(imu_quat):  # Using qpos to check inclination
+        if check_safety_stops(imu_quat):  # Using qpos to check inclination
             print("Safety condition triggered, disabling control gains")
             # Set Kp, Kd to 0 (disable control) for safety
-            Kp = [0, 0, 0]  # Set Kp to 0 for all joints
-            Kd = [0, 0, 0]  # Set Kd to 0 for all joints
+            Kp = 10 # Set Kp to 0 for all joints
+            Kd = 0.3  # Set Kd to 0 for all joints
+            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd, 1.0)
             exit()
 
         # First, record initial position
@@ -293,7 +296,8 @@ if __name__ == '__main__':
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
         
         elif( motiontime >= 7*(1/dt)):
-
+            #Kp[0]=60
+            #Kd[0]=1
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
                 inference_ready.set()
@@ -312,7 +316,7 @@ if __name__ == '__main__':
             qDes[i*3+2] = np.clip(qDes[i*3+2], -2.78, -0.65) # Calf joint
 
         if motiontime >= 1*(1/dt):
-            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp[0], Kd[0])
+            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp[0], Kd[0], 1.0)
 
         # Temporize the loop to maintain the desired frequency
         time_until_next_step = dt - (time.time() - step_start)

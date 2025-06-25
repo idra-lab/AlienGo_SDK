@@ -2,6 +2,7 @@ import rospy
 import numpy as np
 from sensor_msgs.msg import Imu, JointState
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStamped
+from std_msgs.msg import Float64
 from nav_msgs.msg import Odometry
 from unitree_legged_msgs.msg import JointStateWithGains
 
@@ -21,6 +22,7 @@ class PubSub():
                                      "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",                                     
                                      "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint", 
                                      "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint"]
+        self.value_function_res = Float64()
 
     def callback_imu(self, msg):
         # Timestamp
@@ -91,8 +93,9 @@ class PubSub():
         
     def init_publisher(self, config_topics):
         self.cmd_pub = rospy.Publisher(config_topics['command'], JointStateWithGains, queue_size=10)
+        self.value_function = rospy.Publisher(config_topics['value_function'], Float64, queue_size=10)
 
-    def publish(self, qpos, qvel, eff, Kp, Kd):
+    def publish(self, qpos, qvel, eff, Kp, Kd, V_safe):
         try:
             self.joint_state_des.cmd.position = qpos  # store Kp on the fake joint pos
             self.joint_state_des.cmd.velocity = qvel # store Kd on the fake joint vel                        
@@ -100,5 +103,8 @@ class PubSub():
             self.joint_state_des.Kp = 12 * [Kp] # same gains for all joints
             self.joint_state_des.Kd = 12 * [Kd] # same gains for all joints
             self.cmd_pub.publish(self.joint_state_des)
+            
+            self.value_function_res = V_safe
+            self.value_function.publish(self.value_function_res)
         except rospy.ROSInterruptException:
             pass

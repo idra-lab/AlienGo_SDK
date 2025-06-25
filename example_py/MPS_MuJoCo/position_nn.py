@@ -44,7 +44,7 @@ scaling_qdes = scaling_factors['factor']
 xml_path = config['controller']['robot']['model']
 
 # Value function
-config_value = mps_code.load_value(config['policy']['paths']['value_function'])
+#config_value = mps_code.load_value(config['policy']['paths']['value_function'])
 
 ## Shared variables
 # For actions
@@ -70,6 +70,7 @@ meas_time2 = []
 
 # Initialize as recoverable
 is_rec = [True]
+V_safe = [1.]
 
 nominal = [True] # Use the nominal policy at the beginning
 
@@ -78,7 +79,7 @@ i_backup = 0   # Counter for the number of times the backup policy has been appl
 
 motiontime = 0
 
-joystick_use = False
+joystick_use = True
 
 
 class ProntoThread(threading.Thread):
@@ -160,7 +161,7 @@ def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
     nn order = [FL, FR, RL, RR]
     """    
     # Send specific commands instead of using the controller
-    if joystick_use:
+    if False:#\joystick_use:
         commands = get_commands()
     else:    
         if nominal:
@@ -168,9 +169,9 @@ def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
         else:
             commands = np.array([-0.45, -0.02, 0.])
 
-    #commands = np.array([-0.45, 0.02, 0.])
+    commands = np.array([-0.45, -0.02, 0.0])
 
-    commands = np.array([0.,0.,0.])
+    #commands = np.array([0.,0.,0.])
 
     imu_quat = state[1]
     imu_gyro = state[2]
@@ -227,7 +228,7 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
         if is_rec[0]:
             # Compute torque using nominal policy using a copy of the network not to affect the original one
             #actor_network_copy = copy.deepcopy(actor_network)
-            strt_time = time.time()
+            #strt_time = time.time()
             running_mean = copy.copy(actor_network.running_mean_std.running_mean)
             running_var = copy.copy(actor_network.running_mean_std.running_var)
             count = copy.copy(actor_network.running_mean_std.count)
@@ -242,13 +243,13 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
                 new_actions_numpy = actor_network(obs_normalized).numpy()
 
             # Compute qDes with the nominal policy
-            qDes_check = scaling_qdes * swap_legs(new_actions_numpy) + np.array(default_joint_angles)
+            '''qDes_check = scaling_qdes * swap_legs(new_actions_numpy) + np.array(default_joint_angles)
             qDes_check = np.clip(qDes_check, min_pos, max_pos)
-            meas_time.append(time.time()-strt_time)
-            strt_time = time.time()
+            #meas_time.append(time.time()-strt_time)
+            #strt_time = time.time()
             # MPS
-            is_rec[0] = mps.is_rec_single(qDes_check, data_new[5], data_new[6], data_new[3], data_new[4])
-            meas_time2.append(time.time()-strt_time)
+            is_rec[0], V_safe[0] = mps.is_rec_single(qDes_check, data_new[5], data_new[6], data_new[3], data_new[4])
+            #meas_time2.append(time.time()-strt_time)
             # Set to true to see how its computation affects the time without
             # switching policies
             is_rec[0] = True
@@ -266,7 +267,7 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
 
 
                 with torch.no_grad():
-                    new_actions_numpy = actor_network(obs_normalized).numpy()
+                    new_actions_numpy = actor_network(obs_normalized).numpy()'''
         else:
             i_backup += 1
         
@@ -357,7 +358,7 @@ if __name__ == '__main__':
     joints = ['_0', '_1', '_2']
 
     # Creates a 12-element list with the default joint angles for the standup
-    q0 = default_joint_angles
+    q0 = 4*[0.0, 0.7, -1.5]#default_joint_angles
     dt = 0.002
 
     # Initial joint position, typically when the robot is on the ground
@@ -383,7 +384,7 @@ if __name__ == '__main__':
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     # Decimation changed to 5 to have a 100 Hz main loop, like in the simulations
     decimation = config['controller']['robot']['decimation']
-    mps = mps_code.MPS(decimation, torque_values_n, Kp, Kd, config_value, xml_path, lim_tau)
+    #mps = mps_code.MPS(decimation, torque_values_n, Kp, Kd, config_value, xml_path, lim_tau)
 
     
 
@@ -399,7 +400,7 @@ if __name__ == '__main__':
     threading.Thread(target=compute_actions, args=(scaling_factors, nominal, is_rec), daemon=True).start()
     #pronto_thread = ProntoThread()
     rate_ros = rospy.Rate(500)  # 500 Hz for dt = 0.002
-    while not rospy.is_shutdown() and motiontime < 20000:
+    while not rospy.is_shutdown():
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
         The main loop for sending commands is running at 500Hz
@@ -416,8 +417,9 @@ if __name__ == '__main__':
         if not simulator and check_safety_stops(pubSub.imu_quat):  # Using qpos to check inclination
             print("Safety condition triggered, disabling control gains",motiontime)
             # Set Kp, Kd to 0 (disable control) for safety
-            Kp = 0
-            Kd = 0
+            Kp = 10
+            Kd = 0.3
+            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd, V_safe[0])
             exit()
 
         # First, record initial position
@@ -448,6 +450,7 @@ if __name__ == '__main__':
                 firstTime = False
 
         elif( motiontime >= 17*(1/dt)):
+            #exit()
             if motiontime % decimation == 0:
                # print('[ ', motiontime, ' ] decimation!')
                 inference_ready.set()
@@ -468,16 +471,19 @@ if __name__ == '__main__':
           
         # Publish commands only after completing the phase in which the initial joint positions are collected
         if(motiontime >= 1*(1/dt)):
-            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd)
+            pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd, V_safe[0])
 
         # Temporize the loop to maintain the desired frequency
+        '''time_rem = rate_ros.remaining().to_nsec()
+        if motiontime % decimation == 0 and time_rem < 0:
+            print(time_rem)'''
         rate_ros.sleep()
 
-    #rospy.spin()
+    rospy.spin()
    # pronto_thread.join()
-    print('nn', sum(meas_time)/len(meas_time))
+    '''print('nn', sum(meas_time)/len(meas_time))
     print('mps', sum(meas_time2)/len(meas_time2))
     print('mujoco', sum(mps.time1)/len(mps.time1))
-    print('value function', sum(mps.time2)/len(mps.time2))
+    print('value function', sum(mps.time2)/len(mps.time2))'''
     
     

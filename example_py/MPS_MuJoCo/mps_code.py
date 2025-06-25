@@ -82,7 +82,7 @@ class MPS:
         self.critic_network = CriticEvaluator(self.critic_model, self.params)
 
     def is_rec_single(self, qDes, pose, twist, joint_pos, joint_vel):
-        start_time = time.time()
+        #start_time = time.time()
         # Define initial data for simulation
         self.data.qpos = np.concatenate((pose, joint_pos))
         self.data.qvel = np.concatenate((twist, joint_vel))
@@ -97,13 +97,13 @@ class MPS:
             mujoco.mj_step(self.model, self.data)
             q_muj = self.data.qpos.copy()
             v_muj = self.data.qvel.copy()
-        self.time1.append(time.time()-start_time)
-        start_time = time.time()
+        #self.time1.append(time.time()-start_time)
+        #start_time = time.time()
         threshold = 0.3
         #time_fnc = time.time()
-        value_fnc_result = self.computeValueFnc(threshold)
-        self.time2.append(time.time()-start_time)
-        return value_fnc_result
+        value_fnc_result, V_safe = self.computeValueFnc(threshold)
+        #self.time2.append(time.time()-start_time)
+        return value_fnc_result, V_safe
 
     def swap_legs(self, array):
         """
@@ -147,7 +147,7 @@ class MPS:
 
         if V_safe > threshold:
           #  print(f"\033[92mV_safe: {V_safe:.4f}\033[0m")
-            return True
+            return True, V_safe
         else:
           #  print(f"\033[91mV_safe: {V_safe:.4f}\033[0m")
-            return False
+            return False, V_safe
