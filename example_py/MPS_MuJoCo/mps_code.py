@@ -1,153 +1,122 @@
 import numpy as np
 import mujoco
 import torch
-from utils import quat_rotate_inverse
-import time
+import torch.nn as nn
 
 # Value function network load
 import flax.linen as nn_flax
+import pickle
 import jax
 from jax import numpy as jnp
+import os
 from functools import partial
+
+import flax.linen as nn
 import pickle
+import jax
+import jax.numpy as jnp
+import yaml
+from pathlib import Path
+from utils import quat_rotate_inverse, swap_legs
 
-def load_value(file_path):
-    with open(file_path, 'rb') as f:
-        return pickle.load(f)
 
-class CriticNetwork(nn_flax.Module):
-    @nn_flax.compact
+class CriticNetwork(nn.Module):
+    @nn.compact
     def __call__(self, x):
-        x = nn_flax.Dense(512)(x)
-        x = nn_flax.LayerNorm()(x)
-        x = nn_flax.elu(x)
-        x = nn_flax.Dense(256)(x)
-        x = nn_flax.LayerNorm()(x)
-        x = nn_flax.elu(x)
-        x = nn_flax.Dense(128)(x)
-        x = nn_flax.LayerNorm()(x)
-        x = nn_flax.elu(x)
-        # Output initialized to 1 (probability of survival)
-        x = nn_flax.Dense(1, kernel_init=nn_flax.initializers.zeros, bias_init=nn_flax.initializers.ones)(x)
-        # x = nn.Dense(1)(x)
+        x = nn.Dense(512)(x)
+        x = nn.LayerNorm()(x)
+        x = nn.elu(x)
+        x = nn.Dense(256)(x)
+        x = nn.LayerNorm()(x)
+        x = nn.elu(x)
+        x = nn.Dense(128)(x)
+        x = nn.LayerNorm()(x)
+        x = nn.elu(x)
+        x = nn.Dense(1, kernel_init=nn.initializers.zeros, bias_init=nn.initializers.ones)(x)
         return x.squeeze(-1)
-    
-class CriticEvaluator:
-    def __init__(self, model, params):
-        self.apply_fn = model.apply
-        self.params = params
 
-def normalize_inputs(obss, mean, std):
-    return (obss - mean) / (std + 1e-8)
 
-#@jax.jit
-@partial(jax.jit, static_argnames=['critic_model'])
-def critic_inference(critic_model, params, obs):
-    return critic_model.apply(params, obs)
+class FlaxCritic:
+    def __init__(self, config):
 
-def modelData(xml):
-    # MuJoCo robot model
-    model_muj = mujoco.MjModel.from_xml_path(xml)
-    data_muj = mujoco.MjData(model_muj)
+        checkpoint_path = config#["paths"]["safety_vf_path"]
+        self._load_model(checkpoint_path)
 
-    return model_muj, data_muj
+    def _load_model(self, model_path: str):
+        with open(model_path, 'rb') as f:
+            data = pickle.load(f)
+
+        self.params = data['model_params']
+        self.mean = jnp.array(data['mean'])
+        self.std = jnp.array(data['std'])
+        self.model = CriticNetwork()
+        self._inference_fn = jax.jit(self._evaluate)
+
+    def _evaluate(self, params, obs):
+        normalized_obs = (obs - self.mean) / (self.std + 1e-8)
+        return self.model.apply(params, normalized_obs)
+
+    def evaluate(self, obs):
+        obs_jnp = jnp.array(obs)
+        return self._inference_fn(self.params, obs_jnp)
+
+    def is_safe(self, obs, threshold=0.0):
+        return self.evaluate(obs) >= threshold
 
 class MPS:
-    def __init__(self, decimation, torque_values, Kp_n, Kd_n, config_value, xml_path, lim_tau):
-        # Compute the number of MuJoCo iterations to use each network output        
-        self.iter_ctrl = decimation
-
-        # Parameters for the nominal policy
-        self.torque_values = 4*torque_values
-        self.Kp_n = Kp_n
-        self.Kd_n = Kd_n
-        self.data_value = config_value
-
-        self.lim_tau = lim_tau
+    def __init__(self, vf_path, threshold):
         self.grav_tens = torch.tensor([[0., 0., -1.]], device='cpu', dtype=torch.double)
-
+        self.vf_path = vf_path
+        self.threshold = threshold
         # Model robot using MuJoCo for the MPS loop
-        self.model, self.data = modelData(xml_path)
         self.setup_value_function()
-        value_fnc_result = self.computeValueFnc(0.3)
-        self.time1 = []
-        self.time2 = []
- 
+
+        # Max pos considering angles insetad of quaternions
+
     def setup_value_function(self):
-        # Setup value function network
-        self.critic_model = CriticNetwork()
-        self.params, self.mean, self.std = self.data_value['model_params'], self.data_value['mean'], self.data_value['std']
+        # Setup per la critic network
+        self.critic = FlaxCritic(self.vf_path)
 
-        # Create object to evaluate the value function
-        self.critic_network = CriticEvaluator(self.critic_model, self.params)
+    def is_rec_single(self, state):
+        #return True, 0.9
+        imu_quat = state[1]
+        imu_gyro = state[2]
+        joint_pos = state[3]
+        joint_vel = state[4]
+        
+        is_rec, value_fnc_result = self.computeValueFnc(joint_pos, joint_vel, imu_quat, imu_gyro)
 
-    def is_rec_single(self, qDes, pose, twist, joint_pos, joint_vel):
-        #start_time = time.time()
-        # Define initial data for simulation
-        self.data.qpos = np.concatenate((pose, joint_pos))
-        self.data.qvel = np.concatenate((twist, joint_vel))
-        mujoco.mj_forward(self.model, self.data)
+        return is_rec, value_fnc_result
 
-        ## Simulate x with pi_hat
-        q_muj = self.data.qpos.copy()
-        v_muj = self.data.qvel.copy()
-        for j in range(self.iter_ctrl):
-            u_nominal = self.Kd_n * (- v_muj[6:]) + self.Kp_n * (qDes - q_muj[7:]) + self.torque_values
-            self.data.ctrl = np.clip(u_nominal, -self.lim_tau, self.lim_tau)
-            mujoco.mj_step(self.model, self.data)
-            q_muj = self.data.qpos.copy()
-            v_muj = self.data.qvel.copy()
-        #self.time1.append(time.time()-start_time)
-        #start_time = time.time()
-        threshold = 0.3
-        #time_fnc = time.time()
-        value_fnc_result, V_safe = self.computeValueFnc(threshold)
-        #self.time2.append(time.time()-start_time)
-        return value_fnc_result, V_safe
-
-    def swap_legs(self, array):
-        """
-        Swap the front and rear legs of the array based on predefined indices.
-
-        The swap logic is fixed:
-        - Swap front legs (indices 3:6) with (0:3)
-        - Swap rear legs (indices 9:12) with (6:9)
-        """
-        array_copy = array.copy()  # Make a copy to avoid modifying the original array
-        order = [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]
-        return array_copy[order]
     
-    def computeValueFnc(self, threshold):
-        body_quat_reordered = np.array([self.data.qpos[4], self.data.qpos[5], self.data.qpos[6], self.data.qpos[3]])
+    def computeValueFnc(self, joint_pos, joint_vel, imu_quat, imu_gyro):
+
+        body_quat_reordered = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
         tensor_quat = torch.tensor(body_quat_reordered, device='cpu', dtype=torch.double).unsqueeze(0)
         gravity_body = quat_rotate_inverse(tensor_quat, self.grav_tens)[0].cpu().numpy()
-        body_lin_vel_global = self.data.qvel[:3].copy()
-        body_ang_vel_global = self.data.qvel[3:6].copy()
-        body_lin_vel_tensor = torch.tensor(body_lin_vel_global[None], device='cpu', dtype=torch.double)
-        body_lin_vel_local = quat_rotate_inverse(tensor_quat, body_lin_vel_tensor)[0].cpu().numpy()
-        vel_tp1 = np.concatenate([body_lin_vel_local, body_ang_vel_global])
-        joint_pos_tp1 = self.swap_legs(self.data.qpos[7:].copy())
-        joint_vel_tp1 = self.swap_legs(self.data.qvel[6:].copy())
-        z_after = self.data.qpos[2]
+
+        body_ang_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
+        
+        # -------------------------------
+        # Legs swap to match network order (see documentation)
+        # -------------------------------
+        joint_pos = swap_legs([joint_pos[i] for i in range(12)])
+        joint_vel = swap_legs([joint_vel[i] for i in range(12)])
 
         obs_flax_np = np.concatenate((
-            np.array([z_after], dtype=np.float32),
             gravity_body.astype(np.float32),
-            vel_tp1.astype(np.float32),
-            joint_pos_tp1.astype(np.float32),
-            joint_vel_tp1.astype(np.float32)
+            body_ang_vel,
+            joint_pos.astype(np.float32),
+            joint_vel.astype(np.float32)
         ))
 
-        obs_flax = jnp.array(obs_flax_np)  # jax.numpy array
+        obs_flax = jnp.array(obs_flax_np)
 
-        # Normalize the observation
-        obs_flax = normalize_inputs(obs_flax, self.mean, self.std)
+        V_safe = self.critic.evaluate(obs_flax)
 
-        V_safe = critic_inference(self.critic_model, self.critic_network.params, obs_flax)
-
-        if V_safe > threshold:
-          #  print(f"\033[92mV_safe: {V_safe:.4f}\033[0m")
+        if V_safe > self.threshold:
+            #print(f"\033[92mV_safe: {V_safe:.4f}\033[0m")
             return True, V_safe
         else:
-          #  print(f"\033[91mV_safe: {V_safe:.4f}\033[0m")
+            #print(f"\033[91mV_safe: {V_safe:.4f}\033[0m")
             return False, V_safe

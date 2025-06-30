@@ -79,7 +79,7 @@ i_backup = 0   # Counter for the number of times the backup policy has been appl
 
 motiontime = 0
 
-joystick_use = True
+joystick_commands = config['controller']['robot']['joystick_commands']
 
 
 class ProntoThread(threading.Thread):
@@ -161,16 +161,16 @@ def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
     nn order = [FL, FR, RL, RR]
     """    
     # Send specific commands instead of using the controller
-    if False:#\joystick_use:
+    if joystick_commands:
         commands = get_commands()
     else:    
         if nominal:
             commands = np.array([0.,0.,0.])
         else:
-            commands = np.array([-0.45, -0.02, 0.])
+            commands = np.array([-0.15466003, 0.15466003, 0.0])
 
-    commands = np.array([-0.45, -0.02, 0.0])
-    commands = get_commands()
+    #commands = np.array([-0.15466003, 0.15466003, 0.0])
+    #commands = get_commands()
 
     #commands = np.array([0.,0.,0.])
 
@@ -227,16 +227,16 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
         # MPS check only if the backup has not been activated
         #'''
         if is_rec[0]:
+            # MPS
+            data_use = copy.copy(data_new)
+            is_rec[0], V_safe[0] = mps.is_rec_single(data_use)
             # Compute torque using nominal policy using a copy of the network not to affect the original one
             #actor_network_copy = copy.deepcopy(actor_network)
             #strt_time = time.time()
-            running_mean = copy.copy(actor_network.running_mean_std.running_mean)
-            running_var = copy.copy(actor_network.running_mean_std.running_var)
-            count = copy.copy(actor_network.running_mean_std.count)
-
-            obs = compute_observation(data_new, scaling_factors, True)
+            
+            is_rec[0] = True
+            obs = compute_observation(data_use, scaling_factors, is_rec[0])
             obs_tensor = torch.tensor(obs, dtype=torch.float32)
-            #obs_normalized = actor_network_copy.norm_obs(obs_tensor)
             obs_normalized = actor_network.norm_obs(obs_tensor)
 
             with torch.no_grad():
@@ -244,37 +244,20 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
                 new_actions_numpy = actor_network(obs_normalized).numpy()
 
             # Compute qDes with the nominal policy
-            '''qDes_check = scaling_qdes * swap_legs(new_actions_numpy) + np.array(default_joint_angles)
-            qDes_check = np.clip(qDes_check, min_pos, max_pos)
+            #'''
             #meas_time.append(time.time()-strt_time)
             #strt_time = time.time()
-            # MPS
-            is_rec[0], V_safe[0] = mps.is_rec_single(qDes_check, data_new[5], data_new[6], data_new[3], data_new[4])
+            
             #meas_time2.append(time.time()-strt_time)
             # Set to true to see how its computation affects the time without
             # switching policies
-            is_rec[0] = True
-            if not is_rec[0]:
-                print('not is rec')
-                nominal[0] = False
-                i_backup += 1
-                actor_network.running_mean_std.running_mean = running_mean
-                actor_network.running_mean_std.running_var = running_var
-                actor_network.running_mean_std.count = count
-
-                obs = compute_observation(data_new, scaling_factors, False)
-                obs_tensor = torch.tensor(obs, dtype=torch.float32)
-                obs_normalized = actor_network.norm_obs(obs_tensor)
-
-
-                with torch.no_grad():
-                    new_actions_numpy = actor_network(obs_normalized).numpy()'''
+            
         else:
             i_backup += 1
         
         # Compute actions with the selected policy
-
-            obs = compute_observation(data_new, scaling_factors, False)
+            data_use = copy.copy(data_new)
+            obs = compute_observation(data_use, scaling_factors, False)
             obs_tensor = torch.tensor(obs, dtype=torch.float32)
             obs_normalized = actor_network.norm_obs(obs_tensor)
 
@@ -385,7 +368,7 @@ if __name__ == '__main__':
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     # Decimation changed to 5 to have a 100 Hz main loop, like in the simulations
     decimation = config['controller']['robot']['decimation']
-    #mps = mps_code.MPS(decimation, torque_values_n, Kp, Kd, config_value, xml_path, lim_tau)
+    mps = mps_code.MPS(config['policy']['paths']['value_function'],config['policy']['robot']['vf_threshold'])
 
     
 
