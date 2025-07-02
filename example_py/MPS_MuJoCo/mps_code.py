@@ -19,6 +19,7 @@ import yaml
 from pathlib import Path
 from utils import quat_rotate_inverse, swap_legs
 
+import time
 
 class CriticNetwork(nn.Module):
     @nn.compact
@@ -37,9 +38,9 @@ class CriticNetwork(nn.Module):
 
 
 class FlaxCritic:
-    def __init__(self, config):
+    def __init__(self, vf_path):
 
-        checkpoint_path = config#["paths"]["safety_vf_path"]
+        checkpoint_path = vf_path#config["paths"]["safety_vf_path"]
         self._load_model(checkpoint_path)
 
     def _load_model(self, model_path: str):
@@ -70,7 +71,7 @@ class MPS:
         self.threshold = threshold
         # Model robot using MuJoCo for the MPS loop
         self.setup_value_function()
-
+        self.computeValueFnc(np.zeros(12), np.zeros(12), np.zeros(4), np.zeros(3))
         # Max pos considering angles insetad of quaternions
 
     def setup_value_function(self):
@@ -78,23 +79,21 @@ class MPS:
         self.critic = FlaxCritic(self.vf_path)
 
     def is_rec_single(self, state):
-        #return True, 0.9
+        
         imu_quat = state[1]
         imu_gyro = state[2]
         joint_pos = state[3]
         joint_vel = state[4]
-        
         is_rec, value_fnc_result = self.computeValueFnc(joint_pos, joint_vel, imu_quat, imu_gyro)
 
         return is_rec, value_fnc_result
 
     
     def computeValueFnc(self, joint_pos, joint_vel, imu_quat, imu_gyro):
-
         body_quat_reordered = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
         tensor_quat = torch.tensor(body_quat_reordered, device='cpu', dtype=torch.double).unsqueeze(0)
         gravity_body = quat_rotate_inverse(tensor_quat, self.grav_tens)[0].cpu().numpy()
-
+        
         body_ang_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
         
         # -------------------------------
@@ -102,7 +101,7 @@ class MPS:
         # -------------------------------
         joint_pos = swap_legs([joint_pos[i] for i in range(12)])
         joint_vel = swap_legs([joint_vel[i] for i in range(12)])
-
+        
         obs_flax_np = np.concatenate((
             gravity_body.astype(np.float32),
             body_ang_vel,
@@ -111,9 +110,9 @@ class MPS:
         ))
 
         obs_flax = jnp.array(obs_flax_np)
-
+        #start = time.time()
         V_safe = self.critic.evaluate(obs_flax)
-
+        #print('time', time.time()-start)
         if V_safe > self.threshold:
             #print(f"\033[92mV_safe: {V_safe:.4f}\033[0m")
             return True, V_safe
