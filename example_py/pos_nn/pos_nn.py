@@ -5,6 +5,7 @@ import time
 import math
 import numpy as np
 import torch
+import mps
 
 sys.path.append('../../lib/python/amd64')
 import robot_interface as sdk
@@ -15,6 +16,9 @@ from utils import scale_axis, quat_rotate_inverse, swap_legs, clip_torques_in_gr
 import pygame
 
 import threading
+
+import time
+import csv
 
 # Initialize pygame and the joystick module
 pygame.init()
@@ -42,6 +46,9 @@ TARGET_IP = "192.168.123.10"
 
 LOW_CMD_LENGTH = 610
 LOW_STATE_LENGTH = 771
+
+time_file = time.localtime()
+nameFile = 'data' + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min)
 
 def get_commands(): 
     """
@@ -100,15 +107,36 @@ previous_actions = np.zeros(12)  # Store the previous actions
 inference_ready = threading.Event()  # Event to signal new inference results
 stop_threads = False  # Flag to stop threads gracefully
 
-def compute_observation(state, scaling_factors):
+# Initialize as recoverable
+is_rec = [True]
+V_safe = [1.]
+V_safe_save = []
+
+nominal = [True] # Use the nominal policy at the beginning
+
+N_backup = 400 # Maximum number of iterations for the backup policy to be applied
+i_backup = 0   # Counter for the number of times the backup policy has been applied
+
+def compute_observation(state, scaling_factors, nominal):
     """
     Compute the observation vector from the robot's state.
     Legs are swapped to match the order of the neural network input.
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    commands = get_commands() # The stopping condition here is not evaluated
-    #commands = np.array([-0.45, 0.02, 0.])
+    #commands = get_commands() # The stopping condition here is not evaluated
+    #print(commands)
+    #commands = np.array([-0.89997253,  0.,         -1.38256714])
+    #commands = np.array([0., 0.1, 0.])
+    #commands = np.array([-0.15466003, 0.1, 0.0])
+    if nominal:
+        commands = np.array([0.2, 0.2, 0.])
+    else:
+        commands = np.array([-0.75, 0.3, 0.0])
+
+    #'''
+    #commands = np.array([0.2, 0.2, 0.])
+    
 
     imu = state.imu
     body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
@@ -139,33 +167,50 @@ def compute_observation(state, scaling_factors):
     # Concatenate into a single observation vector
     return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles, scaled_joint_velocities, scaled_actions))
 
-def compute_actions(state, scaling_factors):
+def compute_actions(state, scaling_factors, nominal, is_rec):
     """
     Inference ont he nn to retrive actions from observations.
     Legs are swapped to match the order of the neural network input.
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    global latest_actions, previous_actions, stop_threads
+    global latest_actions, previous_actions, stop_threads, i_backup
     while not stop_threads:
         start_time = time.time()
         
         inference_ready.wait()  # Wait for signal from the main thread
         inference_ready.clear()
 
-        obs = compute_observation(state, scaling_factors)
+        if is_rec[0]:
+            is_rec[0], V_safe[0] = mps.is_rec_single(state)
+            V_safe_save.append([V_safe[0].tolist()])
+            #is_rec[0] = True
+
+            obs = compute_observation(state, scaling_factors, is_rec[0])
+        else:
+            i_backup += 1
+        
+        # Compute actions with the selected policy
+            obs = compute_observation(state, scaling_factors, False)
+
+
         obs_tensor = torch.tensor(obs, dtype=torch.float32)
         obs_normalized = actor_network.norm_obs(obs_tensor)
 
         with torch.no_grad():
             new_actions1 = actor_network(obs_normalized).numpy()
-        
+
         # Swap the actions to the correct order for SDK
         new_actions = swap_legs(new_actions1)
 
         with lock:
             previous_actions[:] = latest_actions  # Store current actions as previous
             latest_actions[:] = new_actions  # Update latest actions
+
+        if i_backup == N_backup:
+            i_backup = 0
+            is_rec[0] = True
+            nominal[0] = True
     
         """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
 
@@ -235,6 +280,7 @@ if __name__ == '__main__':
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     decimation = 4
+    mps = mps.MPS('../nn/test.pkl',0.6)
 
     # Initialize the UDP connection
     udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
@@ -250,7 +296,7 @@ if __name__ == '__main__':
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
 
     # Start the inference thread
-    threading.Thread(target=compute_actions, args=(state, scaling_factors), daemon=True).start()
+    threading.Thread(target=compute_actions, args=(state, scaling_factors, nominal, is_rec), daemon=True).start()
 
     while True:
         """
@@ -270,6 +316,11 @@ if __name__ == '__main__':
             # Set Kp, Kd to 0 (disable control) for safety
             Kp = [0, 0, 0]  # Set Kp to 0 for all joints
             Kd = [0, 0, 0]  # Set Kd to 0 for all joints
+            name_save = nameFile + "_VF.csv"
+            with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(V_safe_save)
+            myfile.close()
             exit()
 
         # First, record initial position

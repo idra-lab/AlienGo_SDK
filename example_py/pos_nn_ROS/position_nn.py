@@ -16,13 +16,14 @@ import threading
 
 import rospy
 import publish_subscribe
+import copy
 
 # Config and neural network setup
 config_path = "../MPS_MuJoCo/config.yaml"
 config = load_config(config_path)
 
 use_simulator = config['controller']['robot']['simulator']
-use_joystick = config['controller']['robot']['joystick']
+use_joystick = config['controller']['robot']['joystick_commands']
 
 actor_network = load_actor_network(config['policy']['paths']['checkpoint_path'])
 scaling_factors = config['policy']['scaling']
@@ -106,12 +107,12 @@ def compute_observation(imu_quat, imu_gyro, joint_pos, joint_vel, scaling_factor
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    if use_joystick:
+    '''if use_joystick:
         commands = get_commands() # The stopping condition here is not evaluated
     else:
-        commands = np.array([0.,0.,0.])
+        commands = np.array([0.,0.,0.])'''
 
-    commands = np.array([0., 0., 0.0])
+    commands = np.array([0., 0.1, 0.])
 
     body_quat = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
     body_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
@@ -265,19 +266,19 @@ if __name__ == '__main__':
         step_start = time.time()
         motiontime += 1
 
-        data_new = [pubSub.imu_acc,pubSub.imu_quat,pubSub.imu_gyro,pubSub.joint_pos,pubSub.joint_vel]
+        data_new = [copy.copy(pubSub.imu_quat),copy.copy(pubSub.imu_gyro),copy.copy(pubSub.joint_pos),copy.copy(pubSub.joint_vel)]
 
-        imu_quat[0] = data_new[1]
-        imu_gyro[0] = data_new[2]
-        joint_pos[0] = data_new[3]
-        joint_vel[0] = data_new[4]
+        imu_quat[0] = data_new[0]
+        imu_gyro[0] = data_new[1]
+        joint_pos[0] = data_new[2]
+        joint_vel[0] = data_new[3]
 
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
         if check_safety_stops(imu_quat):  # Using qpos to check inclination
             print("Safety condition triggered, disabling control gains")
             # Set Kp, Kd to 0 (disable control) for safety
             Kp = 10 # Set Kp to 0 for all joints
-            Kd = 0.3  # Set Kd to 0 for all joints
+            Kd = 1  # Set Kd to 0 for all joints
             pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd, 1.0)
             exit()
 

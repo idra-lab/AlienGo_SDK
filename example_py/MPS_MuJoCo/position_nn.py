@@ -165,14 +165,14 @@ def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
         commands = get_commands()
     else:    
         if nominal:
-            commands = np.array([0.,0.,0.])
+            commands = np.array([0., 0.1, 0.])
         else:
-            commands = np.array([-0.15466003, 0.15466003, 0.0])
+            commands = np.array([-0.15466003, 0.1, 0.0])#np.array([-0.15466003, 0.15466003, 0.0])
 
-    #commands = np.array([-0.15466003, 0.15466003, 0.0])
+    commands = np.array([0., 0.1, 0.])
     #commands = get_commands()
 
-    #commands = np.array([0.,0.,0.])
+    #commands = np.array([-0.15466003, 0.1, 0.0])
 
     imu_quat = state[1]
     imu_gyro = state[2]
@@ -402,7 +402,7 @@ if __name__ == '__main__':
             print("Safety condition triggered, disabling control gains",motiontime)
             # Set Kp, Kd to 0 (disable control) for safety
             Kp = 10
-            Kd = 0.3
+            Kd = 1
             pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp, Kd, V_safe[0])
             exit()
 

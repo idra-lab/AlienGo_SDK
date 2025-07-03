@@ -1,7 +1,5 @@
 import numpy as np
-import mujoco
 import torch
-import torch.nn as nn
 
 # Value function network load
 import flax.linen as nn_flax
@@ -11,29 +9,22 @@ from jax import numpy as jnp
 import os
 from functools import partial
 
-import flax.linen as nn
-import pickle
-import jax
-import jax.numpy as jnp
-import yaml
-from pathlib import Path
 from utils import quat_rotate_inverse, swap_legs
 
-import time
 
-class CriticNetwork(nn.Module):
-    @nn.compact
+class CriticNetwork(nn_flax.Module):
+    @nn_flax.compact
     def __call__(self, x):
-        x = nn.Dense(512)(x)
-        x = nn.LayerNorm()(x)
-        x = nn.elu(x)
-        x = nn.Dense(256)(x)
-        x = nn.LayerNorm()(x)
-        x = nn.elu(x)
-        x = nn.Dense(128)(x)
-        x = nn.LayerNorm()(x)
-        x = nn.elu(x)
-        x = nn.Dense(1, kernel_init=nn.initializers.zeros, bias_init=nn.initializers.ones)(x)
+        x = nn_flax.Dense(512)(x)
+        x = nn_flax.LayerNorm()(x)
+        x = nn_flax.elu(x)
+        x = nn_flax.Dense(256)(x)
+        x = nn_flax.LayerNorm()(x)
+        x = nn_flax.elu(x)
+        x = nn_flax.Dense(128)(x)
+        x = nn_flax.LayerNorm()(x)
+        x = nn_flax.elu(x)
+        x = nn_flax.Dense(1, kernel_init=nn_flax.initializers.zeros, bias_init=nn_flax.initializers.ones)(x)
         return x.squeeze(-1)
 
 
@@ -79,17 +70,18 @@ class MPS:
         self.critic = FlaxCritic(self.vf_path)
 
     def is_rec_single(self, state):
-        return True, 1
-        imu_quat = state[1]
-        imu_gyro = state[2]
-        joint_pos = state[3]
-        joint_vel = state[4]
+        
+        imu = state.imu
+        imu_quat = imu.quaternion
+        imu_gyro = imu.gyroscope
+        joint_pos = [state.motorState[i].q for i in range(12)]
+        joint_vel = [state.motorState[i].dq for i in range(12)]
         is_rec, value_fnc_result = self.computeValueFnc(joint_pos, joint_vel, imu_quat, imu_gyro)
 
         return is_rec, value_fnc_result
 
     
-    def computeValueFnc(self, joint_pos, joint_vel, imu_quat, imu_gyro):
+    def computeValueFnc(self, joint_pos1, joint_vel1, imu_quat, imu_gyro):
         body_quat_reordered = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
         tensor_quat = torch.tensor(body_quat_reordered, device='cpu', dtype=torch.double).unsqueeze(0)
         gravity_body = quat_rotate_inverse(tensor_quat, self.grav_tens)[0].cpu().numpy()
@@ -99,14 +91,14 @@ class MPS:
         # -------------------------------
         # Legs swap to match network order (see documentation)
         # -------------------------------
-        joint_pos = swap_legs([joint_pos[i] for i in range(12)])
-        joint_vel = swap_legs([joint_vel[i] for i in range(12)])
+        joint_pos = np.array(swap_legs(joint_pos1), dtype=np.float32)
+        joint_vel = np.array(swap_legs(joint_vel1), dtype=np.float32)
         
         obs_flax_np = np.concatenate((
             gravity_body.astype(np.float32),
             body_ang_vel,
-            joint_pos.astype(np.float32),
-            joint_vel.astype(np.float32)
+            joint_pos,
+            joint_vel
         ))
 
         obs_flax = jnp.array(obs_flax_np)
