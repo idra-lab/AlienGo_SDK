@@ -11,7 +11,7 @@ sys.path.append('../../lib/python/amd64')
 import robot_interface as sdk
 
 # Neural network and configuration imports
-from config_loader import load_config, load_actor_network, labels_state_dict, Backup
+from config_loader import load_config, load_actor_network, labels_state_dict, Backup, orderPosition, computeBackup, orderBackup
 from utils import scale_axis, quat_rotate_inverse, swap_legs, clip_torques_in_groups
 import pygame
 
@@ -80,7 +80,7 @@ joint_def = torch.tensor([ 0.1000, -0.1000,  0.1000,
 
 # Load neural network for backup policy
 #PATH = '/home/jessica/SMPS/MuJoCo_Aligator_Full/backup_policy/test/FULL_STATE__NN_v3.pt'
-PATH = 'best_agent.pt'
+PATH = '../nn/backup_stop.pt'
 dict_policy = torch.load(PATH, map_location=torch.device(device))['policy']
 
 new_keys = ["layers.0.weight", "layers.0.bias", "layers.2.weight", "layers.2.bias",
@@ -188,6 +188,7 @@ def compute_observation(state, scaling_factors, nominal):
         commands = np.array([0.2, 0.2, 0.])
     else:
         commands = np.array([-0.75, 0.3, 0.0])
+    commands = np.array([-0.75, 0.3, 0.0])
     
 
     #'''
@@ -245,32 +246,53 @@ def compute_actions(state, scaling_factors, nominal, is_rec):
         if is_rec[0]:
             is_rec[0], V_safe[0] = mps.is_rec_single(state)
             V_safe_save.append([V_safe[0].tolist()])
-            #is_rec[0] = True
-            obs = compute_observation(state, scaling_factors, is_rec[0])
+            is_rec[0] = True
+            if is_rec[0]:
+                obs = compute_observation(state, scaling_factors, is_rec[0])
+                obs_tensor = torch.tensor(obs, dtype=torch.float32)
+                obs_normalized = actor_network.norm_obs(obs_tensor)
+
+                with torch.no_grad():
+                    new_actions1 = actor_network(obs_normalized).numpy()
+
+                # Swap the actions to the correct order for SDK
+                new_actions = swap_legs(new_actions1)
+
+                with lock:
+                    previous_actions[:] = latest_actions  # Store current actions as previous
+                    latest_actions[:] = new_actions  # Update latest actions
+
+            else:
+                imu = state.imu.accelerometer
+                #imu[2] = -imu[2]
+                #imu[1] = -imu[1]
+                joint_angles = [state.motorState[i].q for i in range(12)]
+                joint_velocities = [state.motorState[i].dq for i in range(12)]
+                last_action_backup = (orderPosition(joint_angles) / 0.8) - backup_nn.joint_def.detach().cpu().numpy()
+                last_action_backup = computeBackup(joint_angles, joint_velocities, backup_nn, imu, last_action_backup)
+                with lock:
+                    previous_actions[:] = latest_actions  # Store current actions as previous
+                    latest_actions[:] = last_action_backup  # Update latest actions
+        
         else:
             i_backup += 1
+
+            imu = state.imu.accelerometer
+            #imu[2] = -imu[2]
+            #imu[1] = -imu[1]
+            joint_angles = [state.motorState[i].q for i in range(12)]
+            joint_velocities = [state.motorState[i].dq for i in range(12)]
+            last_action_backup = (orderPosition(joint_angles) / 0.8) - backup_nn.joint_def.detach().cpu().numpy()
+            last_action_backup = computeBackup(joint_angles, joint_velocities, backup_nn, imu, last_action_backup)
+            with lock:
+                    previous_actions[:] = latest_actions  # Store current actions as previous
+                    latest_actions[:] = last_action_backup  # Update latest actions
         
-        # Compute actions with the selected policy
-            obs = compute_observation(state, scaling_factors, False)
 
-
-        obs_tensor = torch.tensor(obs, dtype=torch.float32)
-        obs_normalized = actor_network.norm_obs(obs_tensor)
-
-        with torch.no_grad():
-            new_actions1 = actor_network(obs_normalized).numpy()
-
-        # Swap the actions to the correct order for SDK
-        new_actions = swap_legs(new_actions1)
-
-        with lock:
-            previous_actions[:] = latest_actions  # Store current actions as previous
-            latest_actions[:] = new_actions  # Update latest actions
-
-        if i_backup == N_backup:
+        '''if i_backup == N_backup:
             i_backup = 0
             is_rec[0] = True
-            nominal[0] = True
+            nominal[0] = True'''
     
         """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
 
@@ -406,6 +428,10 @@ if __name__ == '__main__':
         
         elif( motiontime >= 7*(1/dt)):
 
+            if motiontime >= 10*(1/dt):
+                is_rec[0] = False
+                #Kp = [25, 25, 25]
+                #Kd = [0.5, 0.5, 0.5]
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
                 inference_ready.set()
@@ -415,7 +441,10 @@ if __name__ == '__main__':
                 current_actions = np.copy(latest_actions)
 
             #print(current_actions)
-            qDes = 0.5 * current_actions + np.array(default_joint_angles)
+            if is_rec[0]:
+                qDes = 0.5 * current_actions + np.array(default_joint_angles)
+            else:
+                qDes = orderBackup(current_actions) * 0.8 + orderBackup(backup_nn.joint_def)
 
         # Clip the joint angles to the joint limits
         for i in range(4):

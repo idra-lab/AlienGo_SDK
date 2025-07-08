@@ -100,15 +100,20 @@ def computeBackup(q_muj, v_muj, backup_nn, imu, last_action):
     
     
     new_action = backup_nn.forward(scaled_state) 
-    pos_backup_order = orderBackup((new_action * 0.8) + backup_nn.joint_def)
+    #pos_backup_order = orderBackup((new_action * 0.8) + backup_nn.joint_def)
     
-    return pos_backup_order, new_action.detach().cpu().numpy()
+    return new_action.detach().numpy()
 
 def orderState(pos, vel):
     order_pos = [10, 7, 16, 13, 11, 8, 17, 14, 12, 9, 18, 15]
     order_vel = [ 9, 6, 15, 12, 10, 7, 16, 13, 11, 8, 17, 14]
-    return pos[order_pos], vel[order_vel]
+    return np.array([pos[i-7] for i in order_pos]),np.array([vel[i-7] for i in order_vel])
+            #pos[order_pos], vel[order_vel]
 
 def orderBackup(pos):
     order_pos = [1, 5, 9, 0, 4, 8, 3, 7, 11, 2, 6, 10]
-    return pos[order_pos].detach().cpu().numpy()
+    return np.array([pos[i] for i in order_pos])#.detach().cpu().numpy()
+
+def orderPosition(pos):
+    order_pos = [10, 7, 16, 13, 11, 8, 17, 14, 12, 9, 18, 15]
+    return np.array([pos[i-7] for i in order_pos])#pos[order_pos]
