@@ -32,14 +32,14 @@ policy:
 
   paths:
     checkpoint_path: ../nn/SoloTerrain.pth # nn/SoloTerrain_lower_frequency.pth
-    value_function: ../nn/safety_VF.pkl #VF_safe_MPC_small.pkl
+    value_function: ../nn/value_function_vel_python_38.pkl #VF_safe_MPC_small.pkl
 
 controller:
   robot:
     simulator: False # True #
     joystick_commands: False # True #
     model: ../aliengo_models/xml/aliengo.xml
-    decimation: 5
+    decimation: 4
   topics:
     imu: /aliengo_ros/imu
     joint_states: /joint_states

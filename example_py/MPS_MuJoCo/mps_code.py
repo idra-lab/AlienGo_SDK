@@ -79,7 +79,7 @@ class MPS:
         self.critic = FlaxCritic(self.vf_path)
 
     def is_rec_single(self, state):
-        return True, 1
+        #return True, 1
         imu_quat = state[1]
         imu_gyro = state[2]
         joint_pos = state[3]

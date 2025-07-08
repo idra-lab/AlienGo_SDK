@@ -29,6 +29,9 @@ actor_network = load_actor_network(config['policy']['paths']['checkpoint_path'])
 scaling_factors = config['policy']['scaling']
 default_joint_angles = config['policy']['robot']['default_joint_angles']
 
+max_pos = config['policy']['robot']['max_pos']
+min_pos = config['policy']['robot']['min_pos']
+
 
 if True:
     # Initialize pygame and the joystick module
@@ -112,7 +115,9 @@ def compute_observation(imu_quat, imu_gyro, joint_pos, joint_vel, scaling_factor
     else:
         commands = np.array([0.,0.,0.])'''
 
-    commands = np.array([0., 0.1, 0.])
+    #commands = np.array([-0.75, 0.3, 0.0])
+    commands = np.array([-0.65, 0.3, 0.0])
+    #commands = np.array([0.2, 0.2, 0.])
 
     body_quat = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
     body_vel = np.array([imu_gyro[0], imu_gyro[1], imu_gyro[2]])
@@ -217,7 +222,7 @@ if __name__ == '__main__':
     torque_values = [-1.6, 0.0, 0.0]
 
     sin_mid_q = 4*[0.0, 0.7, -1.5] # Creates a 12-elements list with the default joint angles for the standup
-    dt = 0.002
+    dt = 0.003
 
     qInit = [0, 0, 0,
              0, 0, 0,
@@ -238,7 +243,7 @@ if __name__ == '__main__':
     actions = torch.zeros(12, dtype=torch.float32)
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
-    decimation = 5
+    decimation = 2
 
     imu_quat = [np.zeros(4)]
     imu_gyro = [np.zeros(3)]
@@ -266,12 +271,7 @@ if __name__ == '__main__':
         step_start = time.time()
         motiontime += 1
 
-        data_new = [copy.copy(pubSub.imu_quat),copy.copy(pubSub.imu_gyro),copy.copy(pubSub.joint_pos),copy.copy(pubSub.joint_vel)]
-
-        imu_quat[0] = data_new[0]
-        imu_gyro[0] = data_new[1]
-        joint_pos[0] = data_new[2]
-        joint_vel[0] = data_new[3]
+        imu_quat[0], imu_gyro[0], joint_pos[0], joint_vel[0] = pubSub.imu_quat,pubSub.imu_gyro,pubSub.joint_pos,pubSub.joint_vel
 
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
         if check_safety_stops(imu_quat):  # Using qpos to check inclination
@@ -311,10 +311,7 @@ if __name__ == '__main__':
             qDes = 0.5 * current_actions + np.array(default_joint_angles)
 
         # Clip the joint angles to the joint limits
-        for i in range(4):
-            qDes[i*3] = np.clip(qDes[i*3], -1.22, 1.22) # Hip joint
-            qDes[i*3+1] = np.clip(qDes[i*3+1], 0.0, 1.8) # Thigh joint
-            qDes[i*3+2] = np.clip(qDes[i*3+2], -2.78, -0.65) # Calf joint
+        qDes = np.clip(qDes, min_pos, max_pos)
 
         if motiontime >= 1*(1/dt):
             pubSub.publish(qDes, np.zeros(12), torque_values*4, Kp[0], Kd[0], 1.0)

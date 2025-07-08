@@ -18,9 +18,6 @@ import pygame
 
 import threading
 import os
-os.environ["XLA_FLAGS"] = os.environ.get("XLA_FLAGS", "") + " --xla_gpu_triton_gemm_any=True"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
 
 ### Configuration and setup of neural networks
 
@@ -169,7 +166,7 @@ def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
         else:
             commands = np.array([-0.15466003, 0.1, 0.0])#np.array([-0.15466003, 0.15466003, 0.0])
 
-    commands = np.array([0., 0.1, 0.])
+    commands = np.array([-0.75, 0.3, 0.0])
     #commands = get_commands()
 
     #commands = np.array([-0.15466003, 0.1, 0.0])
@@ -228,20 +225,15 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
         #'''
         if is_rec[0]:
             # MPS
-            data_use = copy.copy(data_new)
-            is_rec[0], V_safe[0] = mps.is_rec_single(data_use)
+            #data_use = copy.copy(data_new)
+            #is_rec[0], V_safe[0] = mps.is_rec_single(data_new)#use)
             # Compute torque using nominal policy using a copy of the network not to affect the original one
             #actor_network_copy = copy.deepcopy(actor_network)
             #strt_time = time.time()
             
             is_rec[0] = True
-            obs = compute_observation(data_use, scaling_factors, is_rec[0])
-            obs_tensor = torch.tensor(obs, dtype=torch.float32)
-            obs_normalized = actor_network.norm_obs(obs_tensor)
-
-            with torch.no_grad():
-                #new_actions_numpy = actor_network_copy(obs_normalized).numpy()
-                new_actions_numpy = actor_network(obs_normalized).numpy()
+            #obs = compute_observation(data_use, scaling_factors, is_rec[0])
+            obs = compute_observation(data_new, scaling_factors, is_rec[0])
 
             # Compute qDes with the nominal policy
             #'''
@@ -256,14 +248,15 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
             i_backup += 1
         
         # Compute actions with the selected policy
-            data_use = copy.copy(data_new)
-            obs = compute_observation(data_use, scaling_factors, False)
-            obs_tensor = torch.tensor(obs, dtype=torch.float32)
-            obs_normalized = actor_network.norm_obs(obs_tensor)
+            #data_use = copy.copy(data_new)
+            #obs = compute_observation(data_use, scaling_factors, False)
+            obs = compute_observation(data_new, scaling_factors, False)
+        obs_tensor = torch.tensor(obs, dtype=torch.float32)
+        obs_normalized = actor_network.norm_obs(obs_tensor)
 
 
-            with torch.no_grad():
-                new_actions_numpy = actor_network(obs_normalized).numpy()
+        with torch.no_grad():
+            new_actions_numpy = actor_network(obs_normalized).numpy()
 
         new_actions = swap_legs(new_actions_numpy)
       #  print("latest actions in compute actions BEFORE writing to global variable:",motiontime)#, latest_actions)#'''
@@ -276,9 +269,9 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
 
         # Switch back to the nominal policy after applying the backup for N_backup steps
         if i_backup == N_backup:
-                i_backup = 0
-                is_rec[0] = True
-                nominal[0] = True
+            i_backup = 0
+            is_rec[0] = True
+            nominal[0] = True
         
 
   #  print('compute actions finished')
@@ -383,7 +376,7 @@ if __name__ == '__main__':
     data_new = [np.zeros(3), np.zeros(4), np.zeros(3), np.zeros(12), np.zeros(12), np.zeros(7), np.zeros(6)]
     threading.Thread(target=compute_actions, args=(scaling_factors, nominal, is_rec), daemon=True).start()
     #pronto_thread = ProntoThread()
-    rate_ros = rospy.Rate(500)  # 500 Hz for dt = 0.002
+    rate_ros = rospy.Rate(1/dt)  # 500 Hz for dt = 0.002
     while not rospy.is_shutdown():
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
@@ -422,18 +415,18 @@ if __name__ == '__main__':
        #     print('[ ', motiontime, '] standing up  ... ')#,data_new[3])
             # Here I don't switch the legs because the default joint angles are simmetric
             qDes = [jointLinearInterpolation(qInit[i], q0[i], rate) for i in range(12)]
-            qDes = np.clip(qDes, min_pos, max_pos)
+            #qDes = np.clip(qDes, min_pos, max_pos)
        #     print('qDes', qDes)
 
         
-        elif( motiontime >= 7*(1/dt) and motiontime < 17*(1/dt)):
+        elif False:#( motiontime >= 7*(1/dt) and motiontime < 17*(1/dt)):
             #exit()
             if firstTime:
                 print('STARTING PRONTO IN SEPARATE THREAD!!')
              #   pronto_thread.run()
                 firstTime = False
 
-        elif( motiontime >= 17*(1/dt)):
+        elif( motiontime >= 7*(1/dt)):#( motiontime >= 17*(1/dt)):
             #exit()
             if motiontime % decimation == 0:
                # print('[ ', motiontime, ' ] decimation!')
@@ -451,7 +444,9 @@ if __name__ == '__main__':
                 
             # Compute and clip the desired joint angles
             qDes = scaling_qdes * current_actions + np.array(default_joint_angles)
-            qDes = np.clip(qDes, min_pos, max_pos)
+        qDes = np.clip(qDes, min_pos, max_pos)
+
+        
           
         # Publish commands only after completing the phase in which the initial joint positions are collected
         if(motiontime >= 1*(1/dt)):

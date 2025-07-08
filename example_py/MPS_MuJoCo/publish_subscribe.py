@@ -5,6 +5,8 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStam
 from std_msgs.msg import Float64
 from nav_msgs.msg import Odometry
 from unitree_legged_msgs.msg import JointStateWithGains
+import threading
+import copy
 
 class PubSub():
     def __init__(self):
@@ -23,33 +25,37 @@ class PubSub():
                                      "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint", 
                                      "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint"]
         self.value_function_res = Float64()
+        self.lock_imu = threading.Lock()
+        self.lock_joint = threading.Lock()
+        
 
     def callback_imu(self, msg):
         # Timestamp
-        self.imu_time = msg.header.stamp.to_sec()
+        with self.lock_imu:
+            self.imu_time = msg.header.stamp.to_sec()
 
-        # Orientation quaternion [x, y, z, w]
-        self.imu_quat  = np.array([
-            msg.orientation.w,
-            msg.orientation.x,
-            msg.orientation.y,
-            msg.orientation.z,
-            
-        ], dtype=np.float64)
+            # Orientation quaternion [x, y, z, w]
+            self.imu_quat  = np.array([
+                msg.orientation.w,
+                msg.orientation.x,
+                msg.orientation.y,
+                msg.orientation.z,
+                
+            ], dtype=np.float32)
 
-        # Angular velocity [x, y, z]
-        self.imu_gyro = np.array([
-            msg.angular_velocity.x,
-            msg.angular_velocity.y,
-            msg.angular_velocity.z
-        ], dtype=np.float64)
+            # Angular velocity [x, y, z]
+            self.imu_gyro = np.array([
+                msg.angular_velocity.x,
+                msg.angular_velocity.y,
+                msg.angular_velocity.z
+            ], dtype=np.float32)
 
-        # Linear acceleration [x, y, z]
-        self.imu_acc = np.array([
-            msg.linear_acceleration.x,
-            msg.linear_acceleration.y,
-            msg.linear_acceleration.z
-        ], dtype=np.float64)
+            # Linear acceleration [x, y, z]
+            self.imu_acc = np.array([
+                msg.linear_acceleration.x,
+                msg.linear_acceleration.y,
+                msg.linear_acceleration.z
+            ], dtype=np.float32)
 
 
     def odom_callback(self, msg):
@@ -65,7 +71,7 @@ class PubSub():
             msg.pose.pose.orientation.x,
             msg.pose.pose.orientation.y,
             msg.pose.pose.orientation.z,
-        ], dtype=np.float64)
+        ], dtype=np.float32)
 
         # Linear velocity [x, y, z]
         self.twist = np.array([
@@ -75,16 +81,17 @@ class PubSub():
             msg.twist.twist.angular.x,
             msg.twist.twist.angular.y,
             msg.twist.twist.angular.z
-        ], dtype=np.float64)
+        ], dtype=np.float32)
 
     def callback_joint(self, data):
       # Data is received Ordered as in HyQ/ANYmal convention LF RF LH RH
       # we convert into Unitree convention RF LF RH LH
-        unitree_ids = [3,4,5,0,1,2,9,10,11,6,7,8]
-    
-        for i in range(12):
-            self.joint_pos[unitree_ids[i]] = data.position[i]
-            self.joint_vel[unitree_ids[i]] = data.velocity[i]
+        with self.lock_joint:
+            unitree_ids = [3,4,5,0,1,2,9,10,11,6,7,8]
+        
+            for i in range(12):
+                self.joint_pos[unitree_ids[i]] = data.position[i]
+                self.joint_vel[unitree_ids[i]] = data.velocity[i]
 
     def init_subscribers(self, config_topics):
         self.imu_sub = rospy.Subscriber(config_topics['imu'], Imu, self.callback_imu)
@@ -92,11 +99,12 @@ class PubSub():
         self.odom_sub = rospy.Subscriber(config_topics['odometry'], Odometry, self.odom_callback)
         
     def init_publisher(self, config_topics):
-        self.cmd_pub = rospy.Publisher(config_topics['command'], JointStateWithGains, queue_size=10)
-        self.value_function = rospy.Publisher(config_topics['value_function'], Float64, queue_size=10)
+        self.cmd_pub = rospy.Publisher(config_topics['command'], JointStateWithGains, queue_size=None, tcp_nodelay=True)
+        self.value_function = rospy.Publisher(config_topics['value_function'], Float64, queue_size=None, tcp_nodelay=True)
 
     def publish(self, qpos, qvel, eff, Kp, Kd, V_safe):
         try:
+            self.joint_state_des.cmd.header.stamp = rospy.Time.now()
             self.joint_state_des.cmd.position = qpos  # store Kp on the fake joint pos
             self.joint_state_des.cmd.velocity = qvel # store Kd on the fake joint vel                        
             self.joint_state_des.cmd.effort = eff
@@ -108,3 +116,15 @@ class PubSub():
             self.value_function.publish(self.value_function_res)
         except rospy.ROSInterruptException:
             pass
+
+    def get_ros_data(self):
+        with self.lock_imu:
+            imu_acc = copy.deepcopy(self.imu_acc)
+            imu_quat = copy.deepcopy(self.imu_quat)
+            imu_gyro = copy.deepcopy(self.imu_gyro)
+        
+        with self.lock_joint:
+            joint_pos = copy.deepcopy(self.joint_pos)
+            joint_vel = copy.deepcopy(self.joint_vel)
+
+        return [imu_acc, imu_quat, imu_gyro, joint_pos, joint_vel]
