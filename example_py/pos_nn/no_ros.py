@@ -91,6 +91,7 @@ old_keys = ["net.0.weight", "net.0.bias",      "net.2.weight",      "net.2.bias"
 new_policy_dict = labels_state_dict(dict_policy, old_keys, new_keys)
 backup_nn = Backup(running_mean, running_variance, epsilon, clip_threshold, joint_def, device)
 backup_nn.load_state_dict(new_policy_dict)
+last_action_backup = np.zeros(12)
 
 # Low-level command parameters
 TARGET_PORT = 8007
@@ -188,7 +189,7 @@ def compute_observation(state, scaling_factors, nominal):
         commands = np.array([0.2, 0.2, 0.])
     else:
         commands = np.array([-0.75, 0.3, 0.0])
-    commands = np.array([-0.75, 0.3, 0.0])
+    commands = np.array([0.2, 0., 0.])
     
 
     #'''
@@ -236,7 +237,7 @@ def compute_actions(state, scaling_factors, nominal, is_rec):
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    global latest_actions, previous_actions, stop_threads, i_backup
+    global latest_actions, previous_actions, stop_threads, i_backup, last_action_backup
     while not stop_threads:
         start_time = time.time()
         
@@ -246,7 +247,7 @@ def compute_actions(state, scaling_factors, nominal, is_rec):
         if is_rec[0]:
             is_rec[0], V_safe[0] = mps.is_rec_single(state)
             V_safe_save.append([V_safe[0].tolist()])
-            is_rec[0] = True
+            #is_rec[0] = True
             if is_rec[0]:
                 obs = compute_observation(state, scaling_factors, is_rec[0])
                 obs_tensor = torch.tensor(obs, dtype=torch.float32)
@@ -268,7 +269,7 @@ def compute_actions(state, scaling_factors, nominal, is_rec):
                 #imu[1] = -imu[1]
                 joint_angles = [state.motorState[i].q for i in range(12)]
                 joint_velocities = [state.motorState[i].dq for i in range(12)]
-                last_action_backup = (orderPosition(joint_angles) / 0.8) - backup_nn.joint_def.detach().cpu().numpy()
+                #last_action_backup = (orderPosition(joint_angles) / 0.8) - backup_nn.joint_def.detach().cpu().numpy()
                 last_action_backup = computeBackup(joint_angles, joint_velocities, backup_nn, imu, last_action_backup)
                 with lock:
                     previous_actions[:] = latest_actions  # Store current actions as previous
@@ -282,17 +283,22 @@ def compute_actions(state, scaling_factors, nominal, is_rec):
             #imu[1] = -imu[1]
             joint_angles = [state.motorState[i].q for i in range(12)]
             joint_velocities = [state.motorState[i].dq for i in range(12)]
-            last_action_backup = (orderPosition(joint_angles) / 0.8) - backup_nn.joint_def.detach().cpu().numpy()
+            #if i_backup == 1:
+            #    print('1')
+            #    last_action_backup = (orderPosition(joint_angles) / 0.8) - backup_nn.joint_def.detach().cpu().numpy()
             last_action_backup = computeBackup(joint_angles, joint_velocities, backup_nn, imu, last_action_backup)
             with lock:
                     previous_actions[:] = latest_actions  # Store current actions as previous
                     latest_actions[:] = last_action_backup  # Update latest actions
         
 
-        '''if i_backup == N_backup:
+        #'''
+        if i_backup == N_backup:
             i_backup = 0
             is_rec[0] = True
-            nominal[0] = True'''
+            nominal[0] = True#'''
+            previous_actions[:] = np.zeros(12) 
+            latest_actions[:] = np.zeros(12)
     
         """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
 
@@ -419,6 +425,7 @@ if __name__ == '__main__':
 
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
+            #exit()
             rate_count += 1
             rate = rate_count / (5*(1/dt))
 
@@ -428,8 +435,8 @@ if __name__ == '__main__':
         
         elif( motiontime >= 7*(1/dt)):
 
-            if motiontime >= 10*(1/dt):
-                is_rec[0] = False
+            #if motiontime >= 10*(1/dt) and motiontime < 11*(1/dt):
+            #    is_rec[0] = False
                 #Kp = [25, 25, 25]
                 #Kd = [0.5, 0.5, 0.5]
             # Trigger inference every `decimation` steps
@@ -471,7 +478,7 @@ if __name__ == '__main__':
            
         """ Safety checks"""
         #'''
-        safe.PowerProtect(cmd, state, 7)
+        safe.PowerProtect(cmd, state, 10)
         safe.PositionLimit(cmd)
 
         if motiontime > 5*(1/dt):
