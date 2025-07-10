@@ -167,8 +167,14 @@ V_safe = [1.]
 V_safe_save = []
 joint_des_save = []
 time_save = []
+joint_pos_save = []
+joint_vel_save = []
+imu_quat_save = []
+imu_vel_save = []
 
 nominal = [True] # Use the nominal policy at the beginning
+
+trot_in_place = True
 
 N_backup = 400 # Maximum number of iterations for the backup policy to be applied
 i_backup = 0   # Counter for the number of times the backup policy has been applied
@@ -185,11 +191,13 @@ def compute_observation(state, scaling_factors, nominal):
     #commands = np.array([-0.89997253,  0.,         -1.38256714])
     #commands = np.array([0., 0.1, 0.])
     #commands = np.array([-0.15466003, 0.1, 0.0])
-    if nominal:
-        commands = np.array([0.2, 0.2, 0.])
+    if trot_in_place:
+        if nominal:
+            commands = np.array([0.2, 0.2, 0.])
+        else:
+            commands = np.array([-0.75, 0.3, 0.0])
     else:
-        commands = np.array([-0.75, 0.3, 0.0])
-    commands = np.array([0.2, 0.2, 0.])
+        commands = np.array([0.2, 0.2, 0.])
     
 
     #'''
@@ -208,6 +216,11 @@ def compute_observation(state, scaling_factors, nominal):
     joint_angles = swap_legs(joint_angles1)
     joint_velocities1 = [state.motorState[i].dq for i in range(12)]
     joint_velocities = swap_legs(joint_velocities1)
+
+    joint_pos_save.append(joint_angles1)
+    joint_vel_save.append(joint_velocities1)
+    imu_quat_save.append([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
+    imu_vel_save.append([imu.gyroscope[0], imu.gyroscope[1], imu.gyroscope[2]])
 
     # Gravity vector in body frame
     gravity_body = quat_rotate_inverse(
@@ -237,7 +250,7 @@ def compute_actions(state, scaling_factors, nominal, is_rec):
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    global latest_actions, previous_actions, stop_threads, i_backup, last_action_backup
+    global latest_actions, previous_actions, stop_threads, i_backup, last_action_backup, joint_pos_save, joint_vel_save, imu_quat_save, imu_vel_save, trot_in_place
     while not stop_threads:
         start_time = time.time()
         
@@ -248,7 +261,7 @@ def compute_actions(state, scaling_factors, nominal, is_rec):
             is_rec[0], V_safe[0] = mps.is_rec_single(state)
             V_safe_save.append([V_safe[0].tolist()])
             #is_rec[0] = True
-            if is_rec[0]:
+            if is_rec[0] or trot_in_place:
                 obs = compute_observation(state, scaling_factors, is_rec[0])
                 obs_tensor = torch.tensor(obs, dtype=torch.float32)
                 obs_normalized = actor_network.norm_obs(obs_tensor)
@@ -277,19 +290,33 @@ def compute_actions(state, scaling_factors, nominal, is_rec):
         
         else:
             i_backup += 1
+            if trot_in_place:
+                obs = compute_observation(state, scaling_factors, is_rec[0])
+                obs_tensor = torch.tensor(obs, dtype=torch.float32)
+                obs_normalized = actor_network.norm_obs(obs_tensor)
 
-            imu = state.imu.accelerometer
-            #imu[2] = -imu[2]
-            #imu[1] = -imu[1]
-            joint_angles = [state.motorState[i].q for i in range(12)]
-            joint_velocities = [state.motorState[i].dq for i in range(12)]
-            #if i_backup == 1:
-            #    print('1')
-            #    last_action_backup = (orderPosition(joint_angles) / 0.8) - backup_nn.joint_def.detach().cpu().numpy()
-            last_action_backup = computeBackup(joint_angles, joint_velocities, backup_nn, imu, last_action_backup)
-            with lock:
+                with torch.no_grad():
+                    new_actions1 = actor_network(obs_normalized).numpy()
+
+                # Swap the actions to the correct order for SDK
+                new_actions = swap_legs(new_actions1)
+
+                with lock:
                     previous_actions[:] = latest_actions  # Store current actions as previous
-                    latest_actions[:] = last_action_backup  # Update latest actions
+                    latest_actions[:] = new_actions  # Update latest actions
+            else:
+                imu = state.imu.accelerometer
+                #imu[2] = -imu[2]
+                #imu[1] = -imu[1]
+                joint_angles = [state.motorState[i].q for i in range(12)]
+                joint_velocities = [state.motorState[i].dq for i in range(12)]
+                #if i_backup == 1:
+                #    print('1')
+                #    last_action_backup = (orderPosition(joint_angles) / 0.8) - backup_nn.joint_def.detach().cpu().numpy()
+                last_action_backup = computeBackup(joint_angles, joint_velocities, backup_nn, imu, last_action_backup)
+                with lock:
+                        previous_actions[:] = latest_actions  # Store current actions as previous
+                        latest_actions[:] = last_action_backup  # Update latest actions
         
 
         #'''
@@ -297,8 +324,9 @@ def compute_actions(state, scaling_factors, nominal, is_rec):
             i_backup = 0
             is_rec[0] = True
             nominal[0] = True#'''
-            previous_actions[:] = np.zeros(12) 
-            latest_actions[:] = np.zeros(12)
+            if not trot_in_place:
+                previous_actions[:] = np.zeros(12) 
+                latest_actions[:] = np.zeros(12)
     
         """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
 
@@ -368,7 +396,10 @@ if __name__ == '__main__':
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
     decimation = 4
-    mps = mps_code.MPS('../nn/value_function_vel_python_38.pkl',0.6)
+    if trot_in_place:
+        mps = mps_code.MPS('../nn/value_function_vel_python_38.pkl',0.6)
+    else:
+        mps = mps_code.MPS('../nn/VF_safe_stop_B.pkl',0.1)
 
     # Initialize the UDP connection
     udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
@@ -383,6 +414,7 @@ if __name__ == '__main__':
 
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
 
+    
     # Start the inference thread
     threading.Thread(target=compute_actions, args=(state, scaling_factors, nominal, is_rec), daemon=True).start()
 
@@ -397,6 +429,10 @@ if __name__ == '__main__':
     
         udp.Recv()
         udp.GetRecv(state)
+      #  print('0-2',state.motorState[0].temperature,state.motorState[1].temperature,state.motorState[2].temperature)
+       # print('3-5',state.motorState[3].temperature,state.motorState[4].temperature,state.motorState[5].temperature)
+       # print('6-8',state.motorState[6].temperature,state.motorState[7].temperature,state.motorState[8].temperature)
+       # print('9-11',state.motorState[9].temperature,state.motorState[10].temperature,state.motorState[11].temperature)
 
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
         if check_safety_stops(state):  # Using qpos to check inclination
@@ -415,6 +451,44 @@ if __name__ == '__main__':
                 wr = csv.writer(myfile)
                 wr.writerows(joint_des_save)
             myfile.close()
+
+            name_save = nameFile + "_qDes.csv"
+            with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(joint_des_save)
+            myfile.close()
+
+            name_save = nameFile + "_qDes.csv"
+            with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(joint_des_save)
+            myfile.close()
+
+            name_save = nameFile + "_joint_pos_save.csv"
+            with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(joint_pos_save)
+            myfile.close()
+
+            name_save = nameFile + "_joint_vel_save.csv"
+            with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(joint_vel_save)
+            myfile.close()
+            
+            name_save = nameFile + "_imu_quat_save.csv"
+            with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(imu_quat_save)
+            myfile.close()
+            
+
+            name_save = nameFile + "_imu_vel_save.csv"
+            with open(name_save, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(imu_vel_save)
+            myfile.close()
+            
 
             exit()
 
