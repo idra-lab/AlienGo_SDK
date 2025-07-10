@@ -189,7 +189,7 @@ def compute_observation(state, scaling_factors, nominal):
         commands = np.array([0.2, 0.2, 0.])
     else:
         commands = np.array([-0.75, 0.3, 0.0])
-    commands = np.array([0.2, 0., 0.])
+    commands = np.array([0.2, 0.2, 0.])
     
 
     #'''

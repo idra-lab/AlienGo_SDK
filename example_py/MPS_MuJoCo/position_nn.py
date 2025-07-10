@@ -12,7 +12,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, TwistWithCovarianceStam
 import time
 
 # Neural network and configuration imports
-from config_loader import load_config, load_actor_network
+from config_loader import load_config, load_actor_network, labels_state_dict, Backup, orderPosition, computeBackup, orderBackup
 from utils import scale_axis, quat_rotate_inverse, swap_legs
 import pygame
 
@@ -77,6 +77,56 @@ i_backup = 0   # Counter for the number of times the backup policy has been appl
 motiontime = 0
 
 joystick_commands = config['controller']['robot']['joystick_commands']
+
+# Backup policy
+device = torch.device('cpu')
+running_mean = torch.tensor([ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.21205050e+00,
+                             -8.06230644e-03, -1.42328272e+00,  1.00789203e-01, -1.14620532e-01,
+                              6.92671321e-02, -2.20188718e-01,  2.29067680e-01,  2.09180188e-01,
+                              2.06069022e-01,  1.45354481e-01, -4.06120459e-01, -4.48609024e-01,
+                             -3.88464357e-01, -3.97695643e-01, -6.33672667e-03, -1.95075319e-03,
+                             -3.96507459e-03, -4.42201867e-02,  1.14105612e-01,  1.03970752e-01,
+                              5.92749748e-02,  4.45349231e-02, -1.63696425e-01, -1.79439128e-01,
+                             -1.44850614e-01, -1.38541725e-01,  3.80852309e-02, -1.01241193e-01,
+                             -1.90169735e-02, -1.39184525e-01,  1.36771685e-01,  1.38808689e-01,
+                              1.64408062e-01,  1.45937922e-01,  4.67878538e-02, -5.74250520e-04,
+                             -6.52443376e-02, -1.06306087e-02], device=device, dtype=torch.float64)
+
+running_variance = torch.tensor([1.45321798e-08, 1.45321798e-08, 1.45321798e-08, 1.02176822e+01,
+                                 1.08386133e+01, 2.91442128e+01, 6.12955153e-02, 7.91401819e-02,
+                                 6.40535954e-02, 3.81343809e-02, 8.86714353e-02, 6.60074706e-02,
+                                 5.39578640e-02, 3.24022101e-02, 5.45107210e-02, 5.66611032e-02,
+                                 6.45901655e-02, 6.92300715e-02, 6.07200216e+00, 5.75513999e+00,
+                                 8.04183510e+00, 8.15766779e+00, 4.10619267e+00, 4.09391329e+00,
+                                 5.59485546e+00, 5.44709528e+00, 6.09915664e+00, 6.84910827e+00,
+                                 9.67759842e+00, 8.53798207e+00, 7.66597364e-02, 7.27123376e-02,
+                                 8.60715622e-02, 6.56937354e-02, 8.89956898e-02, 8.91989478e-02,
+                                 8.37767829e-02, 6.97930652e-02, 1.43025920e-01, 1.22080731e-01,
+                                 1.49352419e-01, 1.33925065e-01], device=device, dtype=torch.float64)
+
+epsilon = 1e-8
+
+clip_threshold = 5.0
+
+joint_def = torch.tensor([ 0.1000, -0.1000,  0.1000,
+                        -0.1000,  0.8000,  0.8000,
+                        1.0000,  1.0000, -1.5000,
+                        -1.5000, -1.5000, -1.5000], device=device, dtype=torch.float64)
+
+# Load neural network for backup policy
+#PATH = '/home/jessica/SMPS/MuJoCo_Aligator_Full/backup_policy/test/FULL_STATE__NN_v3.pt'
+PATH = '../nn/backup_stop.pt'
+dict_policy = torch.load(PATH, map_location=torch.device(device))['policy']
+
+new_keys = ["layers.0.weight", "layers.0.bias", "layers.2.weight", "layers.2.bias",
+                "layers.4.weight", "layers.4.bias", "layers.6.weight", "layers.6.bias"]
+old_keys = ["net.0.weight", "net.0.bias",      "net.2.weight",      "net.2.bias",
+                "net.4.weight", "net.4.bias", "mean_layer.weight", "mean_layer.bias"] 
+
+new_policy_dict = labels_state_dict(dict_policy, old_keys, new_keys)
+backup_nn = Backup(running_mean, running_variance, epsilon, clip_threshold, joint_def, device)
+backup_nn.load_state_dict(new_policy_dict)
+last_action_backup = np.zeros(12)
 
 
 class ProntoThread(threading.Thread):
@@ -167,6 +217,7 @@ def compute_observation(state, scaling_factors, nominal) -> np.ndarray:
             commands = np.array([-0.15466003, 0.1, 0.0])#np.array([-0.15466003, 0.15466003, 0.0])
 
     commands = np.array([-0.75, 0.3, 0.0])
+    commands = np.array([0., 0., 0.0])
     #commands = get_commands()
 
     #commands = np.array([-0.15466003, 0.1, 0.0])
@@ -211,7 +262,7 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    global latest_actions, previous_actions, stop_threads, i_backup
+    global latest_actions, previous_actions, stop_threads, i_backup, last_action_backup
 
     #print('[ ', motiontime, '] first time in compute actions ... ',data_new[3])
     
@@ -226,14 +277,36 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
         if is_rec[0]:
             # MPS
             #data_use = copy.copy(data_new)
-            #is_rec[0], V_safe[0] = mps.is_rec_single(data_new)#use)
+            is_rec[0], V_safe[0] = mps.is_rec_single(data_new)#use)
             # Compute torque using nominal policy using a copy of the network not to affect the original one
             #actor_network_copy = copy.deepcopy(actor_network)
             #strt_time = time.time()
             
-            is_rec[0] = True
+            if is_rec[0]:# = True
             #obs = compute_observation(data_use, scaling_factors, is_rec[0])
-            obs = compute_observation(data_new, scaling_factors, is_rec[0])
+                obs = compute_observation(data_new, scaling_factors, is_rec[0])
+                obs_tensor = torch.tensor(obs, dtype=torch.float32)
+                obs_normalized = actor_network.norm_obs(obs_tensor)
+
+                with torch.no_grad():
+                    new_actions_numpy = actor_network(obs_normalized).numpy()
+
+                new_actions = swap_legs(new_actions_numpy)
+
+                with lock:
+                    previous_actions[:] = latest_actions  # Store current actions as previous
+                    latest_actions[:] = new_actions  # Update latest actions
+
+            else:
+                imu = data_new[0]
+
+                joint_angles = [data_new[3][i] for i in range(12)]
+                joint_velocities = [data_new[4][i] for i in range(12)]
+
+                last_action_backup = computeBackup(joint_angles, joint_velocities, backup_nn, imu, last_action_backup)
+                with lock:
+                    previous_actions[:] = latest_actions  # Store current actions as previous
+                    latest_actions[:] = last_action_backup  # Update latest actions
 
             # Compute qDes with the nominal policy
             #'''
@@ -250,28 +323,24 @@ def compute_actions(scaling_factors, nominal, is_rec) -> np.ndarray:
         # Compute actions with the selected policy
             #data_use = copy.copy(data_new)
             #obs = compute_observation(data_use, scaling_factors, False)
-            obs = compute_observation(data_new, scaling_factors, False)
-        obs_tensor = torch.tensor(obs, dtype=torch.float32)
-        obs_normalized = actor_network.norm_obs(obs_tensor)
+            imu = data_new[0]
 
+            joint_angles = [data_new[3][i] for i in range(12)]
+            joint_velocities = [data_new[4][i] for i in range(12)]
 
-        with torch.no_grad():
-            new_actions_numpy = actor_network(obs_normalized).numpy()
+            last_action_backup = computeBackup(joint_angles, joint_velocities, backup_nn, imu, last_action_backup)
+            with lock:
+                previous_actions[:] = latest_actions  # Store current actions as previous
+                latest_actions[:] = last_action_backup  # Update latest actions
 
-        new_actions = swap_legs(new_actions_numpy)
-      #  print("latest actions in compute actions BEFORE writing to global variable:",motiontime)#, latest_actions)#'''
-
-        with lock:
-            previous_actions[:] = latest_actions  # Store current actions as previous
-            latest_actions[:] = new_actions  # Update latest actions
-
-       # print("latest actions in compute actions AFTER writing to global variable:",motiontime)#, latest_actions)
 
         # Switch back to the nominal policy after applying the backup for N_backup steps
         if i_backup == N_backup:
             i_backup = 0
             is_rec[0] = True
             nominal[0] = True
+            previous_actions[:] = np.zeros(12) 
+            latest_actions[:] = np.zeros(12)
         
 
   #  print('compute actions finished')

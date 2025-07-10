@@ -117,5 +117,5 @@ class MPS:
             #print(f"\033[92mV_safe: {V_safe:.4f}\033[0m")
             return True, V_safe
         else:
-            #print(f"\033[91mV_safe: {V_safe:.4f}\033[0m")
+            print(f"\033[91mV_safe: {V_safe:.4f}\033[0m")
             return False, V_safe

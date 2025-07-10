@@ -36,7 +36,7 @@ policy:
 
 controller:
   robot:
-    simulator: False # True #
+    simulator: True #False # 
     joystick_commands: False # True #
     model: ../aliengo_models/xml/aliengo.xml
     decimation: 4
