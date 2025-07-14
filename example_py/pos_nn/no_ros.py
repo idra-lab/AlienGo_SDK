@@ -524,8 +524,10 @@ if __name__ == '__main__':
             #print(current_actions)
             if is_rec[0]:
                 qDes = 0.5 * current_actions + np.array(default_joint_angles)
+                torque_values = [-1.6, 0.0, 0.0]
             else:
                 qDes = orderBackup(current_actions) * 0.8 + orderBackup(backup_nn.joint_def)
+                torque_values = [0.0, 0.0, 0.0]
 
         # Clip the joint angles to the joint limits
         for i in range(4):
