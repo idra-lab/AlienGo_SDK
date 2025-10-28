@@ -11,7 +11,7 @@ from shapely.geometry import Polygon
 
 def modelData():
     # MuJoCo robot model
-    xml = os.environ["LOCOSIM_DIR"] + '/robot_control/AlienGo_SDK/example_py/MPS_robot_sensors/aliengo_models/xml/aliengo.xml'
+    xml = os.environ["LOCOSIM_DIR"] + '/robot_control/AlienGo_SDK/example_py/aliengo_models/xml/aliengo.xml'
     spec = mujoco.MjSpec()
     spec.from_file(xml)
     model_muj = spec.compile()

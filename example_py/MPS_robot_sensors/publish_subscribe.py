@@ -68,18 +68,24 @@ class PubSub():
 
     def callback_joint(self, data):
         # Locosim interface provides:
-        # LF LH RF RH
+        # LF hip, LF thigh, LF calf
+        # LH hip, LH thigh, LH calf
+        # RF hip, RF thigh, RF calf
+        # RH hip, RH thigh, RH calf
 
-        # Neural network needs:
-        # LF RF LH RH
+        # Nominal neural network needs:
+        # LF hip, RF hip, LH hip, RH hip
+        # LF thigh, RF thigh, LH thigh, RH thigh
+        # LF calf, RF calf, LH calf, RH calf
 
-        # Unitree uses:
-        # RF LF RH LH
+        # Backup neural network needs:
+        # LF hip, LF thigh, LF calf
+        # RF hip, RF thigh, RF calf
+        # LH hip, LH thigh, LH calf
+        # RH hip, RH thigh, RH calf
 
-        # We convert from Locosim to Unitree HERE
-        # conversion from Unitree to NN will be done where the NN is used
-
-        indices = [0, 1, 2, 6, 7, 8, 3, 4, 5, 9, 10, 11]
+        indices = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
+        indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
         for i in range(12):
             self.joint_pos[i] = data.position[indices[i]]
