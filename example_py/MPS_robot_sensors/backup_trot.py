@@ -42,7 +42,7 @@ def load_backup_network(config, backup_policy):
     input_dim = 45
     action_dim = 12
     actor_network = ActorNetwork(input_dim=input_dim, action_dim=action_dim)
-    backup_path = os.environ["LOCOSIM_DIR"] + '/robot_control/AlienGo_SDK/example_py/nn/' + \
+    backup_path = os.environ["LOCOSIM_DIR"] + '/robot_control/AlienGo_SDK/example_py/' + \
                    config['networks']['paths']['trot_backup' + str(backup_policy)]
 
     state_dict = torch.load(backup_path,

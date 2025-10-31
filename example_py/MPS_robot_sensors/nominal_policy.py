@@ -82,8 +82,15 @@ class NominalPolicy():
         estimator_network.eval()
         return estimator_network
 
-    def compute_qdes(self, data, prev_action):
-        velocity_cmd = np.array([0.5, 0, 0])
+    def compute_qdes(self, data, prev_action, math_utils):
+        velocity_cmd = np.array([0.1, 0, 0.])
+
+        ref_base_lin_vel = np.array([velocity_cmd[0], velocity_cmd[1], 0.])
+        ref_base_ang_vel = np.array([0., 0., velocity_cmd[2]])
+        h_R_b = math_utils.eul2Rot(np.array([data.euler[0], data.euler[1], 0.]))
+
+        ref_base_lin_vel_h = h_R_b @ ref_base_lin_vel
+
         quaternion_muj = data.imu_quat
         #body_quat_reordered = np.array([quaternion_muj[1], quaternion_muj[2], quaternion_muj[3], quaternion_muj[0]])
         tensor_quat = torch.tensor(quaternion_muj, device=self.device, dtype=torch.double).unsqueeze(0)
@@ -109,7 +116,8 @@ class NominalPolicy():
             base_vel,
             base_ang_vel,
             base_projected_gravity,
-            velocity_cmd,
+            ref_base_lin_vel_h[0:2],
+            [ref_base_ang_vel[2]],
             joints_pos_delta_ord,
             joints_vel,
             prev_action.copy()
@@ -118,7 +126,8 @@ class NominalPolicy():
         self.phase_signal += self.step_freq * (1 / self.RL_FREQ)
         self.phase_signal = self.phase_signal % 1.0
         obs = np.concatenate((obs, self.phase_signal), axis=0)
-        if (np.linalg.norm(velocity_cmd) < 0.01):
+        commands = np.array([ref_base_lin_vel_h[0], ref_base_lin_vel_h[1], ref_base_ang_vel[2]], dtype=np.float32)
+        if (np.linalg.norm(commands) < 0.01):
             obs[48:52] = -1.0
 
         prev_est = self.history_est[1:, :]
