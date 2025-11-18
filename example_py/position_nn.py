@@ -5,9 +5,11 @@ import time
 import math
 import numpy as np
 import torch
-
+sys.path.append('../')
 sys.path.append('../lib/python/amd64')
 import robot_interface as sdk
+import time
+import csv
 
 # Neural network and configuration imports
 from config_loader.config_loader import load_config, load_actor_network
@@ -29,7 +31,7 @@ else:
     print(f"Detected joystick: {joystick.get_name()}")
 
 # Config and neural network setup
-config_path = "config.yaml"
+config_path = "../config.yaml"
 config = load_config(config_path)
 actor_network = load_actor_network(config)
 scaling_factors = config['scaling']
@@ -230,6 +232,11 @@ if __name__ == '__main__':
     Kp = [100, 100, 100]
     Kd = [3, 3, 3]
 
+    Kp = [0, 0, 0]  # Set Kp to 0 for all joints
+    Kd = [0, 0, 0] 
+    torque_values = [0.0, 0.0, 0.0]
+    save_joints = []
+
     actions = torch.zeros(12, dtype=torch.float32)
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
@@ -269,12 +276,21 @@ if __name__ == '__main__':
             # Set Kp, Kd to 0 (disable control) for safety
             Kp = [0, 0, 0]  # Set Kp to 0 for all joints
             Kd = [0, 0, 0]  # Set Kd to 0 for all joints
+            time_file = time.localtime()
+            nameFile = "joint_data" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(save_joints)
+            myfile.close()
             exit()
 
         # First, record initial position
-        if( motiontime >= 0 and motiontime < 1*(1/dt)):
+        if( motiontime >= 0):# and motiontime < 1*(1/dt)):
             # Extract qInit values using dictionary keys
             qInit = [state.motorState[d[key]].q for key in d]
+            save_joints.append(qInit)
+            print(qInit[7:9], '\n',qInit[10:12], '\n')
+            print(qInit)
 
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
@@ -324,8 +340,8 @@ if __name__ == '__main__':
         safe.PowerProtect(cmd, state, 7)
         safe.PositionLimit(cmd)
 
-        if motiontime > 5*(1/dt):
-            safe.PositionProtect(cmd, state, 0.087)
+        #if motiontime > 5*(1/dt):
+        #    safe.PositionProtect(cmd, state, 0.087)
 
         udp.SetSend(cmd)
         udp.Send()
