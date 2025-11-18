@@ -277,11 +277,11 @@ if __name__ == '__main__':
             Kp = [0, 0, 0]  # Set Kp to 0 for all joints
             Kd = [0, 0, 0]  # Set Kd to 0 for all joints
             time_file = time.localtime()
-            nameFile = "joint_data" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            '''nameFile = "joint_data" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
             with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
                 wr = csv.writer(myfile)
                 wr.writerows(save_joints)
-            myfile.close()
+            myfile.close()'''
             exit()
 
         # First, record initial position
@@ -340,8 +340,8 @@ if __name__ == '__main__':
         safe.PowerProtect(cmd, state, 7)
         safe.PositionLimit(cmd)
 
-        #if motiontime > 5*(1/dt):
-        #    safe.PositionProtect(cmd, state, 0.087)
+      #  if motiontime > 5*(1/dt):
+      #      safe.PositionProtect(cmd, state, 0.087)
 
         udp.SetSend(cmd)
         udp.Send()

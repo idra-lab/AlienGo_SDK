@@ -205,7 +205,7 @@ if __name__ == '__main__':
 
     legs = ['FR', 'FL', 'RR', 'RL']
     joints = ['_0', '_1', '_2']
-    torque_values = [-1.6, 0.0, 0.0]
+    torque_values = [0.0, 0.0, 0.0]
 
     PosStopF  = math.pow(10,9)
     VelStopF  = 16000.0
@@ -227,8 +227,8 @@ if __name__ == '__main__':
     rate_count = 0
 
     # PD tuning parameters
-    Kp = [35, 35, 35]
-    Kd = [1.5, 1.5, 1.5]
+    Kp = [100, 100, 100]
+    Kd = [3, 3, 3]
 
     #Kp = [0, 0, 0]  # Set Kp to 0 for all joints
     #Kd = [0, 0, 0] 
@@ -250,7 +250,7 @@ if __name__ == '__main__':
     motiontime = 0
 
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
-
+    change_gains = True
     # Start the inference thread
     threading.Thread(target=compute_actions, args=(state, scaling_factors), daemon=True).start()
 
@@ -290,6 +290,10 @@ if __name__ == '__main__':
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
         
         elif( motiontime >= 7*(1/dt)):
+            if change_gains:
+                change_gains = False
+                Kp = [35, 35, 35]
+                Kd = [1.5, 1.5, 1.5]
 
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
