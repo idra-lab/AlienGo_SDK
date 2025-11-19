@@ -232,9 +232,9 @@ if __name__ == '__main__':
     Kp = [100, 100, 100]
     Kd = [3, 3, 3]
 
-    Kp = [0, 0, 0]  # Set Kp to 0 for all joints
-    Kd = [0, 0, 0] 
-    torque_values = [0.0, 0.0, 0.0]
+    #Kp = [0, 0, 0]  # Set Kp to 0 for all joints
+    #Kd = [0, 0, 0] 
+    #torque_values = [0.0, 0.0, 0.0]
     save_joints = []
 
     actions = torch.zeros(12, dtype=torch.float32)
@@ -285,7 +285,7 @@ if __name__ == '__main__':
             exit()
 
         # First, record initial position
-        if( motiontime >= 0):# and motiontime < 1*(1/dt)):
+        if( motiontime >= 0 and motiontime < 1*(1/dt)):
             # Extract qInit values using dictionary keys
             qInit = [state.motorState[d[key]].q for key in d]
             save_joints.append(qInit)
@@ -340,8 +340,8 @@ if __name__ == '__main__':
         safe.PowerProtect(cmd, state, 7)
         safe.PositionLimit(cmd)
 
-      #  if motiontime > 5*(1/dt):
-      #      safe.PositionProtect(cmd, state, 0.087)
+        if motiontime > 5*(1/dt):
+            safe.PositionProtect(cmd, state, 0.087)
 
         udp.SetSend(cmd)
         udp.Send()

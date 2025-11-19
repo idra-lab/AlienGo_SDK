@@ -8,6 +8,7 @@ import torch
 sys.path.append('../')
 sys.path.append('../lib/python/amd64')
 import robot_interface as sdk
+import time
 import csv
 
 # Neural network and configuration imports
@@ -30,12 +31,11 @@ else:
     print(f"Detected joystick: {joystick.get_name()}")
 
 # Config and neural network setup
-config_path = "../config3.yaml"
+config_path = "../config.yaml"
 config = load_config(config_path)
 actor_network = load_actor_network(config)
 scaling_factors = config['scaling']
 default_joint_angles = config['robot']['default_joint_angles']
-save_cmd = []
 
 # Low-level command parameters
 TARGET_PORT = 8007
@@ -110,8 +110,6 @@ def compute_observation(state, scaling_factors):
     nn order = [FL, FR, RL, RR]
     """
     commands = get_commands() # The stopping condition here is not evaluated
-    #commands = np.array([1.,0,0])
-    #save_cmd.append(commands)
 
     imu = state.imu
     body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
@@ -209,8 +207,7 @@ if __name__ == '__main__':
 
     legs = ['FR', 'FL', 'RR', 'RL']
     joints = ['_0', '_1', '_2']
-    torque_values = [0.0, 0.0, 0.0]
-    #torque_values = [-.65, 0.0, 0.0]
+    torque_values = [-1.6, 0.0, 0.0]
 
     PosStopF  = math.pow(10,9)
     VelStopF  = 16000.0
@@ -235,13 +232,15 @@ if __name__ == '__main__':
     Kp = [100, 100, 100]
     Kd = [3, 3, 3]
 
-    #Kp = [0, 0, 0]  # Set Kp to 0 for all joints
-    #Kd = [0, 0, 0] 
+    Kp = [0, 0, 0]  # Set Kp to 0 for all joints
+    Kd = [0, 0, 0] 
+    torque_values = [0.0, 0.0, 0.0]
+    save_joints = []
 
     actions = torch.zeros(12, dtype=torch.float32)
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
-    decimation = 10
+    decimation = 4
 
     # Initialize the UDP connection
     udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
@@ -254,8 +253,8 @@ if __name__ == '__main__':
 
     motiontime = 0
 
-    disable_torques = False  # ~Flag to disable torques if inclination exceeds threshold or safety button is pressed
-    change_gains = True
+    disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
+
     # Start the inference thread
     threading.Thread(target=compute_actions, args=(state, scaling_factors), daemon=True).start()
 
@@ -278,18 +277,28 @@ if __name__ == '__main__':
             Kp = [0, 0, 0]  # Set Kp to 0 for all joints
             Kd = [0, 0, 0]  # Set Kd to 0 for all joints
             time_file = time.localtime()
-            nameFile = "cmd" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            '''nameFile = "joint_data" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
             with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
                 wr = csv.writer(myfile)
-                wr.writerows(save_cmd)
-            myfile.close()
+                wr.writerows(save_joints)
+            myfile.close()'''
             exit()
 
         # First, record initial position
-        if( motiontime >= 0 and motiontime < 1*(1/dt)):
+        if( motiontime >= 0):# and motiontime < 1*(1/dt)):
             # Extract qInit values using dictionary keys
             qInit = [state.motorState[d[key]].q for key in d]
-            #print(qInit)
+            save_joints.append(qInit)
+            
+            
+            imu = state.imu
+            body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
+            body_vel = np.array([imu.gyroscope[0], imu.gyroscope[1], imu.gyroscope[2]])
+
+            print(qInit)
+            print('body_quat',body_quat)
+            print('body_vel',body_vel)
+            print(qInit[7:9], '\n',qInit[10:12], '\n')
 
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
@@ -301,10 +310,6 @@ if __name__ == '__main__':
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
         
         elif( motiontime >= 7*(1/dt)):
-            if change_gains:
-                change_gains = False
-                Kp = [35, 35, 35]
-                Kd = [1.5, 1.5, 1.5]
 
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
@@ -343,8 +348,8 @@ if __name__ == '__main__':
         safe.PowerProtect(cmd, state, 7)
         safe.PositionLimit(cmd)
 
-        if motiontime > 5*(1/dt):
-            safe.PositionProtect(cmd, state, 0.087)
+      #  if motiontime > 5*(1/dt):
+      #      safe.PositionProtect(cmd, state, 0.087)
 
         udp.SetSend(cmd)
         udp.Send()
