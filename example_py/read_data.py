@@ -92,6 +92,11 @@ def get_safety_button():
         safety_button = joystick.get_button(3)
         if safety_button:
             return True
+        
+        safety_button = joystick.get_button(0)
+        if safety_button:
+            print(0)
+            return True
        
     return False
 

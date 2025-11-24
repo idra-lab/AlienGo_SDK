@@ -36,6 +36,9 @@ config = load_config(config_path)
 actor_network = load_actor_network(config)
 scaling_factors = config['scaling']
 default_joint_angles = config['robot']['default_joint_angles']
+prev_joint_angles = np.zeros(12)
+save_prev_actions = []
+save_latest_actions = []
 
 # Low-level command parameters
 TARGET_PORT = 8007
@@ -79,6 +82,7 @@ def get_commands():
 
         return commands
     else:
+        print('No joystick')
         exit()
     
 def get_safety_button(): 
@@ -126,6 +130,7 @@ def compute_observation(state, scaling_factors):
     ).squeeze().numpy()
 
     prev_actions1 = np.copy(previous_actions)
+    save_prev_actions.append(prev_actions1.copy())
     prev_actions = swap_legs(prev_actions1)
 
     # Scale observations
@@ -165,8 +170,10 @@ def compute_actions(state, scaling_factors):
         new_actions = swap_legs(new_actions1)
 
         with lock:
-            previous_actions[:] = latest_actions  # Store current actions as previous
+            save_latest_actions.append(latest_actions.copy())
             latest_actions[:] = new_actions  # Update latest actions
+            previous_actions[:] = latest_actions  # Store current actions as previous
+            
     
         """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
 
@@ -190,9 +197,11 @@ def check_safety_stops(state):
     stop_button = get_safety_button()  # Check if the safety button is pressed
 
     if pygame.joystick.get_count() != 1:
+        print('pygame.joystick.get_count() != 1')
         return True
 
     if inclination > np.pi/8 or stop_button:
+        print('inclination', inclination, 'stop_button', stop_button)
         return True
     else:
         return False
@@ -240,7 +249,7 @@ if __name__ == '__main__':
     actions = torch.zeros(12, dtype=torch.float32)
 
     # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
-    decimation = 4
+    decimation = 5#10
 
     # Initialize the UDP connection
     udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
@@ -254,7 +263,7 @@ if __name__ == '__main__':
     motiontime = 0
 
     disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
-
+    change_gains = True
     # Start the inference thread
     threading.Thread(target=compute_actions, args=(state, scaling_factors), daemon=True).start()
 
@@ -282,6 +291,17 @@ if __name__ == '__main__':
                 wr = csv.writer(myfile)
                 wr.writerows(save_joints)
             myfile.close()'''
+            time_file = time.localtime()
+            nameFile = "prev_actions" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(save_prev_actions)
+            myfile.close()
+            nameFile = "latest_actions" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(save_latest_actions)
+            myfile.close()
             exit()
 
         # First, record initial position
@@ -289,8 +309,9 @@ if __name__ == '__main__':
             # Extract qInit values using dictionary keys
             qInit = [state.motorState[d[key]].q for key in d]
             save_joints.append(qInit)
-            print(qInit[7:9], '\n',qInit[10:12], '\n')
-            print(qInit)
+            prev_joint_angles = qInit
+            #print(qInit[7:9], '\n',qInit[10:12], '\n')
+            #print(qInit)
 
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
@@ -302,6 +323,12 @@ if __name__ == '__main__':
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
         
         elif( motiontime >= 7*(1/dt)):
+            if change_gains:
+                change_gains = False
+                #latest_actions = np.zeros(12)  # Store the latest actions safely across threads
+                #previous_actions = np.zeros(12)  # Store the previous actions
+               # Kp = [70, 70, 70]
+               # Kd = [2, 2, 2]
 
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:
@@ -321,6 +348,16 @@ if __name__ == '__main__':
             qDes[i*3+2] = np.clip(qDes[i*3+2], -2.78, -0.65) # Calf joint
 
         if motiontime >= 1*(1/dt):
+            qNew = [state.motorState[d[key]].q for key in d]
+            if np.linalg.norm(np.asarray(prev_joint_angles) - np.asarray(qNew))  > 0.1:
+                print('Large difference')
+                print('prev_joint_angles', prev_joint_angles)
+                print('qNew', qNew)
+                Kp = [0, 0, 0]  # Set Kp to 0 for all joints
+                Kd = [0, 0, 0]  # Set Kd to 0 for all joints
+                exit()
+            prev_joint_angles = qNew
+
             for leg_idx, leg in enumerate(legs):
                 for joint_idx, joint in enumerate(joints):
                     key = f"{leg}{joint}"

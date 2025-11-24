@@ -35,6 +35,9 @@ config = load_config(config_path)
 actor_network = load_actor_network(config)
 scaling_factors = config['scaling']
 default_joint_angles = config['robot']['default_joint_angles']
+prev_joint_angles = np.zeros(12)
+save_prev_actions = []
+save_latest_actions = []
 save_cmd = []
 
 # Low-level command parameters
@@ -79,6 +82,7 @@ def get_commands():
 
         return commands
     else:
+        print('No joystick')
         exit()
     
 def get_safety_button(): 
@@ -128,6 +132,7 @@ def compute_observation(state, scaling_factors):
     ).squeeze().numpy()
 
     prev_actions1 = np.copy(previous_actions)
+    save_prev_actions.append(prev_actions1.copy())
     prev_actions = swap_legs(prev_actions1)
 
     # Scale observations
@@ -167,8 +172,12 @@ def compute_actions(state, scaling_factors):
         new_actions = swap_legs(new_actions1)
 
         with lock:
-            previous_actions[:] = latest_actions  # Store current actions as previous
+            
+            save_latest_actions.append(latest_actions.copy())
+            
             latest_actions[:] = new_actions  # Update latest actions
+            previous_actions[:] = latest_actions  # Store current actions as previous
+            
     
         """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
 
@@ -192,9 +201,11 @@ def check_safety_stops(state):
     stop_button = get_safety_button()  # Check if the safety button is pressed
 
     if pygame.joystick.get_count() != 1:
+        print('pygame.joystick.get_count() != 1')
         return True
 
     if inclination > np.pi/8 or stop_button:
+        print('inclination', inclination, 'stop_button', stop_button)
         return True
     else:
         return False
@@ -209,7 +220,7 @@ if __name__ == '__main__':
 
     legs = ['FR', 'FL', 'RR', 'RL']
     joints = ['_0', '_1', '_2']
-    torque_values = [0.0, 0.0, 0.0]
+    torque_values = [-1.6, 0.0, 0.0]
     #torque_values = [-.65, 0.0, 0.0]
 
     PosStopF  = math.pow(10,9)
@@ -277,11 +288,23 @@ if __name__ == '__main__':
             # Set Kp, Kd to 0 (disable control) for safety
             Kp = [0, 0, 0]  # Set Kp to 0 for all joints
             Kd = [0, 0, 0]  # Set Kd to 0 for all joints
-            time_file = time.localtime()
+            '''time_file = time.localtime()
             nameFile = "cmd" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
             with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
                 wr = csv.writer(myfile)
                 wr.writerows(save_cmd)
+            myfile.close()'''
+
+            time_file = time.localtime()
+            nameFile = "prev_actions" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(save_prev_actions)
+            myfile.close()
+            nameFile = "latest_actions" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(save_latest_actions)
             myfile.close()
             exit()
 
@@ -289,6 +312,7 @@ if __name__ == '__main__':
         if( motiontime >= 0 and motiontime < 1*(1/dt)):
             # Extract qInit values using dictionary keys
             qInit = [state.motorState[d[key]].q for key in d]
+            prev_joint_angles = qInit
             #print(qInit)
 
         # second, move to the origin point of a sine movement with Kp Kd
@@ -303,6 +327,8 @@ if __name__ == '__main__':
         elif( motiontime >= 7*(1/dt)):
             if change_gains:
                 change_gains = False
+                #latest_actions = np.zeros(12)  # Store the latest actions safely across threads
+                #previous_actions = np.zeros(12)  # Store the previous actions
                 Kp = [35, 35, 35]
                 Kd = [1.5, 1.5, 1.5]
 
@@ -324,6 +350,16 @@ if __name__ == '__main__':
             qDes[i*3+2] = np.clip(qDes[i*3+2], -2.78, -0.65) # Calf joint
 
         if motiontime >= 1*(1/dt):
+            qNew = [state.motorState[d[key]].q for key in d]
+            if np.linalg.norm(np.asarray(prev_joint_angles) - np.asarray(qNew))  > 0.1:
+                print('Large difference')
+                print('prev_joint_angles', prev_joint_angles)
+                print('qNew', qNew)
+                Kp = [0, 0, 0]  # Set Kp to 0 for all joints
+                Kd = [0, 0, 0]  # Set Kd to 0 for all joints
+                exit()
+            prev_joint_angles = qNew
+
             for leg_idx, leg in enumerate(legs):
                 for joint_idx, joint in enumerate(joints):
                     key = f"{leg}{joint}"
