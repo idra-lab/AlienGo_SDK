@@ -1,0 +1,196 @@
+settings:
+  paths:
+    results_folder: ../nov_17/p6Results_No_MPS_
+    force_directions: ../sphere_points_100.csv
+    force_iterations: ../aplication_iteration.csv
+    robot_models: ../../aliengo_models
+    mujoco_model: /xml/aliengo.xml
+    pinocchio_model: /urdf/aliengo.urdf
+    save_iterations_folder: iterations/
+    file_iterations_complete: save_iterations_complete
+    file_iterations_no_force: save_iterations_no_force
+    file_iterations_force: save_iterations_force
+    estimate_lipschitz:
+      stop: /Stop_VF_data/data_vf_sensors_stop
+      in_place:
+        sensors: /InPlace_VF_data_ALL/data_vf_sensors_in_place
+        state: /MuJoCo_VF_data/data_vf_mujoco
+  tests:
+    locosim: False
+    last_test: 0
+    torch_num_threads: 1
+    torch_num_interop_threads: 1
+    stop_force: 20
+    threshold_vf: 0.9
+    additional_term_vf: 0.018
+    test_code: True
+    visualize: True
+    use_mps: False
+    manual_mps: False
+    estimate_lipschitz: False
+    all_tests: True
+    vf_always: False
+    save_data: True
+    save_iterations: False
+    nominal_policy: P6
+    backup_policy: P1
+    force_mag: [115, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200]
+    backup:
+      stop: False
+      in_place:
+        sensors: True
+        state: False
+    
+simulation:
+  timestep_simulation: 0.002
+  timestep_mps: 0.01
+  duration: 7
+  framerate: 60
+
+robot:
+  P1:
+    default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
+    kp: [100., 100., 100., 100., 100., 100., 100., 100., 100., 100., 100., 100.]
+    kd: [3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3.]
+    cmd_backup: [-0.45, 0, 0]
+    cmd_nominal: [0, 0, 0]
+  P4:
+    default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
+    kp: [35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35.]
+    kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+
+  P5:
+    default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
+    kp: [35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35.]
+    kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+    cmd_nominal: [0.5, 0.2, 0.0]
+  P6:
+    default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
+    kp: [35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35.]
+    kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+    cmd_nominal: [0.5, 0.0, 0.0]
+
+  P7:
+    default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
+    kp: [35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35.]
+    kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+    cmd_nominal: [0.5, 0.0, 0.0]
+
+env_nominal:
+  action_scale: 0.5
+  decimation: 5
+  dt: 0.002
+  desired_clip_actions: 3.0
+  order: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
+
+actions:
+  bounds:
+    low: -35.0
+    high: 35.0
+    special_high: 45.0
+
+scaling_P4:
+  body_ang_vel: 0.25
+  commands: 2.0
+  gravity_body: 1.0
+  joint_angles: 1.0
+  joint_velocities: 0.05
+  actions: 1.0
+  q_des: 0.3 #0.5
+
+scaling_P5:
+  body_ang_vel: 0.25
+  commands: 2.0
+  gravity_body: 1.0
+  joint_angles: 1.0
+  joint_velocities: 0.05
+  actions: 1.0
+  q_des: 0.5
+
+scaling_P6:
+  body_ang_vel: 0.25
+  commands: 2.0
+  gravity_body: 1.0
+  joint_angles: 1.0
+  joint_velocities: 0.05
+  actions: 1.0
+  q_des: 0.5
+
+scaling_P7:
+  body_ang_vel: 0.25
+  commands: 2.0
+  gravity_body: 1.0
+  joint_angles: 1.0
+  joint_velocities: 0.05
+  actions: 1.0
+  q_des: 0.5
+
+scaling_P1:
+  body_ang_vel: 0.25
+  commands: 2.0
+  gravity_body: 1.0
+  joint_angles: 1.0
+  joint_velocities: 0.05
+  actions: 1.0
+  q_des: 0.5
+
+networks:
+  paths:
+    trot1: nn/trot1.pth
+    trot2: nn/trot2.pth
+    trot3: nn/trot3.pth
+    trot4: nn/trot4.pth
+    trot5: nn/trot5.pth
+    trot6: nn/trot6.pth
+    trot7: nn/trot7.pth
+    stop: nn/stop.pt
+    nominal: nn/aliengo.pt
+    state_estimator: nn/cuncurrent_state_estimator.pth
+    vf_state_in_place: vf/VF_state_in_place.pkl
+    vf_sensors_in_place: vf/VF_IIT3.pkl
+    vf_sensors_stop: vf/VF_sensors_stop.pkl
+    R1:
+    P3:
+  device: cpu
+
+stop:
+  robot:
+    Kp_b: 25
+    Kd_b: 0.5
+    torque_limit: 40.0
+    vel_limit: 26.5
+
+  scaling:
+    running_mean: [  0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.21205050e+00,
+                    -8.06230644e-03, -1.42328272e+00,  1.00789203e-01, -1.14620532e-01,
+                     6.92671321e-02, -2.20188718e-01,  2.29067680e-01,  2.09180188e-01,
+                     2.06069022e-01,  1.45354481e-01, -4.06120459e-01, -4.48609024e-01,
+                    -3.88464357e-01, -3.97695643e-01, -6.33672667e-03, -1.95075319e-03,
+                    -3.96507459e-03, -4.42201867e-02,  1.14105612e-01,  1.03970752e-01,
+                     5.92749748e-02,  4.45349231e-02, -1.63696425e-01, -1.79439128e-01,
+                    -1.44850614e-01, -1.38541725e-01,  3.80852309e-02, -1.01241193e-01,
+                    -1.90169735e-02, -1.39184525e-01,  1.36771685e-01,  1.38808689e-01,
+                     1.64408062e-01,  1.45937922e-01,  4.67878538e-02, -5.74250520e-04,
+                    -6.52443376e-02, -1.06306087e-02]
+    running_variance: [1.45321798e-08, 1.45321798e-08, 1.45321798e-08, 1.02176822e+01,
+                       1.08386133e+01, 2.91442128e+01, 6.12955153e-02, 7.91401819e-02,
+                       6.40535954e-02, 3.81343809e-02, 8.86714353e-02, 6.60074706e-02,
+                       5.39578640e-02, 3.24022101e-02, 5.45107210e-02, 5.66611032e-02,
+                       6.45901655e-02, 6.92300715e-02, 6.07200216e+00, 5.75513999e+00,
+                       8.04183510e+00, 8.15766779e+00, 4.10619267e+00, 4.09391329e+00,
+                       5.59485546e+00, 5.44709528e+00, 6.09915664e+00, 6.84910827e+00,
+                       9.67759842e+00, 8.53798207e+00, 7.66597364e-02, 7.27123376e-02,
+                       8.60715622e-02, 6.56937354e-02, 8.89956898e-02, 8.91989478e-02,
+                       8.37767829e-02, 6.97930652e-02, 1.43025920e-01, 1.22080731e-01,
+                       1.49352419e-01, 1.33925065e-01]
+    epsilon: 1.0e-8
+    clip_threshold: 5.0
+    default_joint_angles: [0.1, -0.1,  0.1, -0.1,  0.8,  0.8, 1.0,  1.0, -1.5, -1.5, -1.5, -1.5]
+    factor: 0.8
+
+  dictionary:
+    old_keys: [net.0.weight, net.0.bias,      net.2.weight,      net.2.bias,
+               net.4.weight, net.4.bias, mean_layer.weight, mean_layer.bias] 
+    new_keys: [layers.0.weight, layers.0.bias, layers.2.weight, layers.2.bias,
+               layers.4.weight, layers.4.bias, layers.6.weight, layers.6.bias]
+    

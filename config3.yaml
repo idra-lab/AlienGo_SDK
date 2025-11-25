@@ -24,3 +24,5 @@ scaling:
 
 paths:
   checkpoint_path: ../nn/SoloTerrain_low_gains_7.pth # nn/SoloTerrain_lower_frequency.pth
+  nominal_path: ../nn/SoloTerrain_low_gains_7.pth
+  backup_path: ../nn/SoloTerrain.pth 
