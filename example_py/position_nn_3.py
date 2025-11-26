@@ -330,7 +330,7 @@ if __name__ == '__main__':
                 #latest_actions = np.zeros(12)  # Store the latest actions safely across threads
                 #previous_actions = np.zeros(12)  # Store the previous actions
                 Kp = [35, 35, 35]
-                Kd = [1.5, 1.5, 1.5]
+                Kd = [1.5, 1.5, 1.5]#[3.5, 3.5, 3.5]
 
             # Trigger inference every `decimation` steps
             if motiontime % decimation == 0:

@@ -32,12 +32,12 @@ else:
     print(f"Detected joystick: {joystick.get_name()}")
 
 # Config and neural network setup
-config_path = "../config3.yaml"
+config_path = "config_mps.yaml"
 config = load_config(config_path)
 nominal_name = config['settings']['tests']['nominal_policy']
 backup_name = config['settings']['tests']['backup_policy']
-nominal_network = TrotPolicy(config, nominal_name, 10) # 10 for decimation of 10
-backup_network = TrotPolicy(config, backup_name, 20) # 20 for decimation of 5
+nominal_network = TrotPolicy(config, nominal_name, 10) # 10 for decimation of 10 keeping timestep_mps =  0.01s and dt =  0.002s
+backup_network = TrotPolicy(config, backup_name, 20) # 20 for decimation of 5 keeping timestep_mps =  0.01s and dt =  0.002s
 kp_backup = np.array(config['robot'][backup_name ]['kp'])
 kd_backup = np.array(config['robot'][backup_name ]['kd'])
 
@@ -58,11 +58,11 @@ start_backup = 0
 # Initialize as recoverable
 is_rec = [True]
 
-scaling_factors = config['scaling']
-default_joint_angles = config['robot']['default_joint_angles']
+#scaling_factors = config['scaling']
+#default_joint_angles = config['robot']['default_joint_angles']
 prev_joint_angles = np.zeros(12)
-save_prev_actions = []
-save_latest_actions = []
+#save_prev_actions = []
+#save_latest_actions = []
 save_cmd = []
 
 # Low-level command parameters
@@ -133,16 +133,7 @@ def get_safety_button():
         if safety_button:
             return True
         
-        manual_switch = joystick.get_button(0)
-        if manual_switch:
-            is_rec[0] = False
-            nominal_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_nominal)
-            nominal_network.actor_network.running_mean_std.running_var = copy.copy(running_var_nominal)
-            nominal_network.actor_network.running_mean_std.count = copy.copy(count_nominal)
-            nominal_network.decimation_counter = 0
-            nominal_network.prev_actions = np.zeros(12)
-            nominal_network.qDes = nominal_network.q_def
-            start_backup = time.time()
+        
             
     return False
 
@@ -174,7 +165,7 @@ def compute_observation(state, scaling_factors):
     ).squeeze().numpy()
 
     prev_actions1 = np.copy(previous_actions)
-    save_prev_actions.append(prev_actions1.copy())
+    #save_prev_actions.append(prev_actions1.copy())
     prev_actions = swap_legs(prev_actions1)
 
     # Scale observations
@@ -189,7 +180,7 @@ def compute_observation(state, scaling_factors):
     # Concatenate into a single observation vector
     return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles, scaled_joint_velocities, scaled_actions))
 
-def compute_actions(state, scaling_factors, is_rec):
+def compute_actions(state, is_rec):
     """
     Inference ont he nn to retrive actions from observations.
     Legs are swapped to match the order of the neural network input.
@@ -231,12 +222,12 @@ def compute_actions(state, scaling_factors, is_rec):
             if is_rec[0]:
                 nominal_network.commands = get_commands()
                 qDes_computed[:] = nominal_network.compute_actions(imu.quaternion, imu.gyroscope, joint_angles, joint_velocities)
-                kp_inference[:] = np.copy(kp_nominal)
-                kd_inference[:] = np.copy(kd_nominal)
+            #    kp_inference[:] = np.copy(kp_nominal)
+            #    kd_inference[:] = np.copy(kd_nominal)
             else:
                 qDes_computed[:] = backup_network.compute_actions(imu.quaternion, imu.gyroscope, joint_angles, joint_velocities)
-                kp_inference[:] = np.copy(kp_backup)
-                kd_inference[:] = np.copy(kd_backup)
+            #    kp_inference[:] = np.copy(kp_backup)
+            #    kd_inference[:] = np.copy(kd_backup)
             
     
         """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
@@ -312,10 +303,6 @@ if __name__ == '__main__':
 
     actions = torch.zeros(12, dtype=torch.float32)
 
-    # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
-    decimation_nominal = 10
-    decimation_backup = 5
-
     # Initialize the UDP connection
     udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
     safe = sdk.Safety(sdk.LeggedType.Aliengo)
@@ -330,8 +317,7 @@ if __name__ == '__main__':
     disable_torques = False  # ~Flag to disable torques if inclination exceeds threshold or safety button is pressed
     change_gains = True
     # Start the inference thread
-    threading.Thread(target=compute_actions, args=(state, scaling_factors, is_rec), daemon=True).start()
-
+    threading.Thread(target=compute_actions, args=(state, is_rec), daemon=True).start()
     while True:
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
@@ -344,6 +330,18 @@ if __name__ == '__main__':
         udp.Recv()
         udp.GetRecv(state)
 
+        manual_switch = joystick.get_button(0)
+        if manual_switch:
+            is_rec[0] = False
+            nominal_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_nominal)
+            nominal_network.actor_network.running_mean_std.running_var = copy.copy(running_var_nominal)
+            nominal_network.actor_network.running_mean_std.count = copy.copy(count_nominal)
+            nominal_network.decimation_counter = 0
+            nominal_network.prev_actions = np.zeros(12)
+            nominal_network.qDes = nominal_network.q_def
+            start_backup = time.time()
+            Kp = np.copy(kp_backup)
+            Kd = np.copy(kd_backup)
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
         if check_safety_stops(state):  # Using qpos to check inclination
             print("Safety condition triggered, disabling control gains")
@@ -357,7 +355,7 @@ if __name__ == '__main__':
                 wr.writerows(save_cmd)
             myfile.close()'''
 
-            time_file = time.localtime()
+            '''time_file = time.localtime()
             nameFile = "prev_actions" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
             with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
                 wr = csv.writer(myfile)
@@ -367,7 +365,7 @@ if __name__ == '__main__':
             with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
                 wr = csv.writer(myfile)
                 wr.writerows(save_latest_actions)
-            myfile.close()
+            myfile.close()'''
             exit()
 
         # First, record initial position
@@ -387,28 +385,31 @@ if __name__ == '__main__':
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
         
         elif( motiontime >= 7*(1/dt)):
-            
+            if change_gains:
+                change_gains = False
+                Kp = np.copy(kp_nominal)
+                Kd = np.copy(kd_nominal)
+            if not is_rec[0] and time.time() - start_backup >= 1:
+                is_rec[0] = True
+                backup_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_backup)
+                backup_network.actor_network.running_mean_std.running_var = copy.copy(running_var_backup)
+                backup_network.actor_network.running_mean_std.count = copy.copy(count_backup)
+                backup_network.decimation_counter = 0
+                backup_network.prev_actions = np.zeros(12)
+                backup_network.qDes = backup_network.q_def
+                Kp = np.copy(kp_nominal)
+                Kd = np.copy(kd_nominal)
 
             inference_ready.set()
 
             # Get the latest available actions
-            with lock:  
-                current_actions = np.copy(latest_actions)
-                if not is_rec[0]:
-                    if time.time() - start_backup >= 4:
-                        is_rec[0] = True
-                        backup_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_backup)
-                        backup_network.actor_network.running_mean_std.running_var = copy.copy(running_var_backup)
-                        backup_network.actor_network.running_mean_std.count = copy.copy(count_backup)
-                        backup_network.decimation_counter = 0
-                        backup_network.prev_actions = np.zeros(12)
-                        backup_network.qDes = backup_network.q_def
+            #with lock:  
+            #    current_actions = np.copy(latest_actions)
                 
 
             #print(current_actions)
             qDes = np.copy(qDes_computed)
-            Kp = np.copy(kp_inference)
-            Kd = np.copy(kd_inference)
+            
 
         # Clip the joint angles to the joint limits
         for i in range(4):

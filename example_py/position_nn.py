@@ -114,6 +114,7 @@ def compute_observation(state, scaling_factors):
     nn order = [FL, FR, RL, RR]
     """
     commands = get_commands() # The stopping condition here is not evaluated
+    commands = np.array([-0.45, 0.2, 0])
 
     imu = state.imu
     body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
