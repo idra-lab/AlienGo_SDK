@@ -1,462 +1,226 @@
-#!/usr/bin/python
-
-import sys
-import time
-import math
-import numpy as np
 import torch
-sys.path.append('../')
-sys.path.append('../lib/python/amd64')
-import robot_interface as sdk
-import csv
-import copy
+import mujoco
+import numpy as np
+from utils import*
+import jax
+import flax.linen as nn_flax
+from jax import numpy as jnp
+from functools import partial
+import pickle
 
-# Neural network and configuration imports
-from config_loader.config_loader import load_config, load_actor_network
-from utils import scale_axis, quat_rotate_inverse, swap_legs, clip_torques_in_groups
-import pygame
-from trot import TrotPolicy
+## Value function network
+class CriticNetwork(nn_flax.Module):
+    @nn_flax.compact
+    def __call__(self, x):
+        x = nn_flax.Dense(512)(x)
+        x = nn_flax.LayerNorm()(x)
+        x = nn_flax.elu(x)
+        x = nn_flax.Dense(256)(x)
+        x = nn_flax.LayerNorm()(x)
+        x = nn_flax.elu(x)
+        x = nn_flax.Dense(128)(x)
+        x = nn_flax.LayerNorm()(x)
+        x = nn_flax.elu(x)
+        # Output initialized to 1 (probability of survival)
+        x = nn_flax.Dense(1, kernel_init=nn_flax.initializers.zeros, bias_init=nn_flax.initializers.ones)(x)
+        return x.squeeze(-1)
 
-import threading
+## State based value function network
+class CriticEvaluator:
+    def __init__(self, model, params):
+        self.apply_fn = model.apply
+        self.params = params
 
-# Initialize pygame and the joystick module
-pygame.init()
-pygame.joystick.init()
+def normalize_inputs(obss, mean, std):
+    return (obss - mean) / (std + 1e-8)
 
-# Check if there is at least one joystick (gamepad) connected
-if pygame.joystick.get_count() == 0:
-    print("No joystick connected")
-else:
-    joystick = pygame.joystick.Joystick(0)  # Get the first joystick
-    joystick.init()
-    print(f"Detected joystick: {joystick.get_name()}")
-
-# Config and neural network setup
-config_path = "config_mps.yaml"
-config = load_config(config_path)
-nominal_name = config['settings']['tests']['nominal_policy']
-backup_name = config['settings']['tests']['backup_policy']
-nominal_network = TrotPolicy(config, nominal_name, 10) # 10 for decimation of 10 keeping timestep_mps =  0.01s and dt =  0.002s
-backup_network = TrotPolicy(config, backup_name, 20) # 20 for decimation of 5 keeping timestep_mps =  0.01s and dt =  0.002s
-kp_backup = np.array(config['robot'][backup_name ]['kp'])
-kd_backup = np.array(config['robot'][backup_name ]['kd'])
-
-kp_nominal = np.array(config['robot'][nominal_name]['kp'])
-kd_nominal = np.array(config['robot'][nominal_name]['kd'])
-
-running_mean_nominal = copy.copy(nominal_network.actor_network.running_mean_std.running_mean)
-running_var_nominal = copy.copy(nominal_network.actor_network.running_mean_std.running_var)
-count_nominal = copy.copy(nominal_network.actor_network.running_mean_std.count)
-
-running_mean_backup = copy.copy(backup_network.actor_network.running_mean_std.running_mean)
-running_var_backup = copy.copy(backup_network.actor_network.running_mean_std.running_var)
-count_backup = copy.copy(backup_network.actor_network.running_mean_std.count)
-cmd_backup = config['robot'][backup_name]['cmd_backup']
-backup_network.commands = np.array(cmd_backup)
-start_backup = 0
-
-# Initialize as recoverable
-is_rec = [True]
-
-#scaling_factors = config['scaling']
-#default_joint_angles = config['robot']['default_joint_angles']
-prev_joint_angles = np.zeros(12)
-#save_prev_actions = []
-#save_latest_actions = []
-save_cmd = []
-
-# Low-level command parameters
-TARGET_PORT = 8007
-LOCAL_PORT = 8082
-TARGET_IP = "192.168.123.10"
-
-LOW_CMD_LENGTH = 610
-LOW_STATE_LENGTH = 771
-
-# Shared variables
-lock = threading.Lock()
-latest_actions = np.zeros(12)  # Store the latest actions safely across threads
-previous_actions = np.zeros(12)  # Store the previous actions
-
-qDes_computed = np.zeros(12)  # Store the previous actions
-kp_inference = np.zeros(12)
-kd_inference = np.zeros(12)
-inference_ready = threading.Event()  # Event to signal new inference results
-stop_threads = False  # Flag to stop threads gracefully
-
-def get_commands(): 
-    """
-    Retrieves joystick commands from a connected joystick using pygame.
-
-    This function checks if there is exactly one joystick connected. If so, it processes
-    joystick events, retrieves axis values, scales them, and applies a threshold to filter
-    out small values. The resulting commands are returned as a numpy array.
-
-    Raises:
-        SystemExit: If no joystick or more than one joystick is connected.
-    """
-
-    if pygame.joystick.get_count() == 1:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-        # Get axis values (e.g., left stick, right stick, triggers)
-        axes = [joystick.get_axis(i) for i in [0, 1, 2, 5]]
-        #axes = [joystick.get_axis(i) for i in [0, 1, 4, 5]]
-        #print("axes: ",axes)
-        summed_axes = + (1+axes[2]) - (1+axes[3])  # Sum axis 2 and axis 5 # Invert signs between the two controllers
-        axes = np.array([axes[0], axes[1], summed_axes])
-
-        scaled_axes = [scale_axis(i, axes[i]) for i in range(len(axes))]
-        scaled_axes[0], scaled_axes[1] =scaled_axes[1], scaled_axes[0]
-        commands = np.array(scaled_axes)
-
-        # Apply the threshold to commands
-        threshold = 0.05  # Define the threshold value
-        commands = np.array([x if abs(x) >= threshold else 0 for x in scaled_axes])
-
-        return commands
-    else:
-        print('No joystick')
-        exit()
-    
-def get_safety_button(): 
-    """Function to check if the safety button on the controller is pressed. Y buttoon for corrent joystick"""
-    global latest_actions, previous_actions, running_mean_nominal, running_var_nominal, count_nominal, start_backup
-    if pygame.joystick.get_count() == 1:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-        safety_button = joystick.get_button(3)
-        if safety_button:
-            return True
-        
-        
-            
-    return False
+@partial(jax.jit, static_argnames=['critic_model'])
+def critic_inference(critic_model, params, obs):
+    return critic_model.apply(params, obs)
 
 
+## Sensor based value function
+class FlaxCritic:
+    def __init__(self, config):
+        checkpoint_path = config
+        self._load_model(checkpoint_path)
 
-def compute_observation(state, scaling_factors):
-    """
-    Compute the observation vector from the robot's state.
-    Legs are swapped to match the order of the neural network input.
-    SDK order = [FR, FL, RR, RL]
-    nn order = [FL, FR, RL, RR]
-    """
-    commands = get_commands() # The stopping condition here is not evaluated
-    #commands = np.array([1.,0,0])
-    #save_cmd.append(commands)
+    def _load_model(self, model_path: str):
+        with open(model_path, 'rb') as f:
+            data = pickle.load(f)
 
-    imu = state.imu
-    body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
-    body_vel = np.array([imu.gyroscope[0], imu.gyroscope[1], imu.gyroscope[2]])
-    joint_angles1 = [state.motorState[i].q for i in range(12)]
-    joint_angles = swap_legs(joint_angles1)
-    joint_velocities1 = [state.motorState[i].dq for i in range(12)]
-    joint_velocities = swap_legs(joint_velocities1)
+        self.params = data['model_params']
+        self.mean = jnp.array(data['mean'])
+        self.std = jnp.array(data['std'])
+        self.model = CriticNetwork()
+        self._inference_fn = jax.jit(self._evaluate)
 
-    # Gravity vector in body frame
-    gravity_body = quat_rotate_inverse(
-        torch.tensor(body_quat, dtype=torch.float32).unsqueeze(0),
-        torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32)
-    ).squeeze().numpy()
+    def _evaluate(self, params, obs):
+        normalized_obs = (obs - self.mean) / (self.std + 1e-8)
+        return self.model.apply(params, normalized_obs)
 
-    prev_actions1 = np.copy(previous_actions)
-    #save_prev_actions.append(prev_actions1.copy())
-    prev_actions = swap_legs(prev_actions1)
+    def evaluate(self, obs):
+        obs_jnp = jnp.array(obs)
+        return self._inference_fn(self.params, obs_jnp)
 
-    # Scale observations
-    scaled_body_vel = body_vel * scaling_factors['body_ang_vel']
-    scaled_commands = commands[:2] * scaling_factors['commands']
-    scaled_commands = np.append(scaled_commands, commands[2] * scaling_factors['body_ang_vel'])
-    scaled_gravity_body = gravity_body * scaling_factors['gravity_body']
-    scaled_joint_angles = np.array(joint_angles) * scaling_factors['joint_angles']
-    scaled_joint_velocities = np.array(joint_velocities) * scaling_factors['joint_velocities']
-    scaled_actions = prev_actions * scaling_factors['actions']
+    def is_safe(self, obs, threshold=0.0):
+        return self.evaluate(obs) >= threshold
 
-    # Concatenate into a single observation vector
-    return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles, scaled_joint_velocities, scaled_actions))
 
-def compute_actions(state, is_rec):
-    """
-    Inference ont he nn to retrive actions from observations.
-    Legs are swapped to match the order of the neural network input.
-    SDK order = [FR, FL, RR, RL]
-    nn order = [FL, FR, RL, RR]
-    """
-    global latest_actions, previous_actions, stop_threads, qDes_computed, kp_inference, kd_inference
-    while not stop_threads:
-        start_time = time.time()
-        
-        inference_ready.wait()  # Wait for signal from the main thread
-        inference_ready.clear()
+class MPS:
+    def __init__(self, config, data = None):
 
-        '''obs = compute_observation(state, scaling_factors)
-        obs_tensor = torch.tensor(obs, dtype=torch.float32)
-        if is_rec[0]:
-            obs_normalized = nominal_network.norm_obs(obs_tensor)
+        # Parameters from config file
+        self.estimate_lipschitz = config['settings']['tests']['estimate_lipschitz']
+        self.device = config['networks']['device']
+
+        self.grav_tens = torch.tensor([[0., 0., -1.]], device=self.device, dtype=torch.double)
+
+        # Variables to save data to estimate Lipschitz constant
+        self.dif_vf_min = None
+        self.dif_vf_input_min = None
+        self.dif_vf_max = None
+        self.dif_vf_input_max = None
+        self.L_estimate = None
+        self.prev_vf = None
+        self.prev_vf_input = None
+        self.save_L = []
+
+        self.threshold = 10
+        self.switch = 0
+        self.switch_min = 2
+        self.vf_additional_term = config['settings']['tests']['additional_term_vf']
+        self.critic = FlaxCritic(config['networks']['paths']['vf_sensors_in_place'])
+        if data != None:
+            self.computeValueFncSensor(data)
         else:
-            obs_normalized = backup_network.norm_obs(obs_tensor)
-        with torch.no_grad():
-            if is_rec[0]:
-                new_actions1 = nominal_network(obs_normalized).numpy()
-            else:
-                new_actions1 = backup_network(obs_normalized).numpy()
+            self.model, self.data = modelMuJoCo(config['settings']['paths'])
+        #self.vf_additional_term = 0.018
         
-        # Swap the actions to the correct order for SDK
-        new_actions = swap_legs(new_actions1)
-
-        with lock:
+            self.computeValueFncSensor()
             
-            save_latest_actions.append(latest_actions.copy())
-            
-            latest_actions[:] = new_actions  # Update latest actions
-            previous_actions[:] = latest_actions  # Store current actions as previous'''
-        imu = state.imu
-        joint_angles = [state.motorState[i].q for i in range(12)]
-        joint_velocities = [state.motorState[i].dq for i in range(12)]
-        with lock:
-            if is_rec[0]:
-                nominal_network.commands = get_commands()
-                qDes_computed[:] = nominal_network.compute_actions(imu.quaternion, imu.gyroscope, joint_angles, joint_velocities)
-            #    kp_inference[:] = np.copy(kp_nominal)
-            #    kd_inference[:] = np.copy(kd_nominal)
-            else:
-                qDes_computed[:] = backup_network.compute_actions(imu.quaternion, imu.gyroscope, joint_angles, joint_velocities)
-            #    kp_inference[:] = np.copy(kp_backup)
-            #    kd_inference[:] = np.copy(kd_backup)
-            
-    
-        """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
-    
-
-def jointLinearInterpolation(initPos, targetPos, rate):
-    """
-    Performs a linear interpolation between initial and target joint positions.
-    """
-    rate = np.fmin(np.fmax(rate, 0.0), 1.0)
-    p = initPos*(1-rate) + targetPos*rate
-    return p
-
-def check_safety_stops(state):
-    """
-    Check if the inclination of the robot base exceeds the threshold (pi/8) and checks the safety button as well.
-    """
-    imu = state.imu
-    body_quat = imu.quaternion  # Quaternion from qpos
-    # Calculate inclination using arcsin formula
-    inclination = 2 * np.arcsin(np.sqrt(body_quat[1]**2 + body_quat[2]**2))
-
-    stop_button = get_safety_button()  # Check if the safety button is pressed
-
-    if pygame.joystick.get_count() != 1:
-        print('pygame.joystick.get_count() != 1')
-        return True
-
-    if inclination > np.pi/8 or stop_button:
-        print('inclination', inclination, 'stop_button', stop_button)
-        return True
-    else:
-        return False
-
-
-if __name__ == '__main__':
-
-    d = {'FR_0':0, 'FR_1':1, 'FR_2':2,
-         'FL_0':3, 'FL_1':4, 'FL_2':5, 
-         'RR_0':6, 'RR_1':7, 'RR_2':8, 
-         'RL_0':9, 'RL_1':10, 'RL_2':11 }
-
-    legs = ['FR', 'FL', 'RR', 'RL']
-    joints = ['_0', '_1', '_2']
-    torque_values = [-1.6, 0.0, 0.0]
-    #torque_values = [-.65, 0.0, 0.0]
-
-    PosStopF  = math.pow(10,9)
-    VelStopF  = 16000.0
-    HIGHLEVEL = 0x00
-    LOWLEVEL  = 0xff
-    sin_mid_q = 4*[0.0, 0.7, -1.5] # Creates a 12-elements list with the default joint angles for the standup
-    dt = 0.002
-
-    qInit = [0, 0, 0,
-             0, 0, 0,
-             0, 0, 0,
-             0, 0, 0]
-    
-    qDes = [0, 0, 0,
-            0, 0, 0,
-            0, 0, 0,
-            0, 0, 0]
-    
-    rate_count = 0
-
-    # PD tuning parameters
-    Kp = [100, 100, 100]
-    Kd = [3, 3, 3]
-
-    #Kp = [0, 0, 0]  # Set Kp to 0 for all joints
-    #Kd = [0, 0, 0] 
-
-    actions = torch.zeros(12, dtype=torch.float32)
-
-    # Initialize the UDP connection
-    udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
-    safe = sdk.Safety(sdk.LeggedType.Aliengo)
-    # Initialize the command and state objects
-    cmd = sdk.LowCmd()
-    state = sdk.LowState()
-    udp.InitCmdData(cmd)
-    cmd.levelFlag = LOWLEVEL
-
-    motiontime = 0
-
-    disable_torques = False  # ~Flag to disable torques if inclination exceeds threshold or safety button is pressed
-    change_gains = True
-    # Start the inference thread
-    threading.Thread(target=compute_actions, args=(state, is_rec), daemon=True).start()
-    while True:
-        """
-        Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
-        The main loop for sending commands is running at 500Hz
-        """
-        #time.sleep(dt)
-        step_start = time.time()
-        motiontime += 1
-    
-        udp.Recv()
-        udp.GetRecv(state)
-
-        manual_switch = joystick.get_button(0)
-        if manual_switch:
-            is_rec[0] = False
-            nominal_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_nominal)
-            nominal_network.actor_network.running_mean_std.running_var = copy.copy(running_var_nominal)
-            nominal_network.actor_network.running_mean_std.count = copy.copy(count_nominal)
-            nominal_network.decimation_counter = 0
-            nominal_network.prev_actions = np.zeros(12)
-            nominal_network.qDes = nominal_network.q_def
-            start_backup = time.time()
-            Kp = np.copy(kp_backup)
-            Kd = np.copy(kd_backup)
-        # Check base inclination and modify Kp, Kd if needed - to disable control torques
-        if check_safety_stops(state):  # Using qpos to check inclination
-            print("Safety condition triggered, disabling control gains")
-            # Set Kp, Kd to 0 (disable control) for safety
-            Kp = [0, 0, 0]  # Set Kp to 0 for all joints
-            Kd = [0, 0, 0]  # Set Kd to 0 for all joints
-            '''time_file = time.localtime()
-            nameFile = "cmd" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
-            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
-                wr = csv.writer(myfile)
-                wr.writerows(save_cmd)
-            myfile.close()'''
-
-            '''time_file = time.localtime()
-            nameFile = "prev_actions" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
-            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
-                wr = csv.writer(myfile)
-                wr.writerows(save_prev_actions)
-            myfile.close()
-            nameFile = "latest_actions" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
-            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
-                wr = csv.writer(myfile)
-                wr.writerows(save_latest_actions)
-            myfile.close()'''
-            exit()
-
-        # First, record initial position
-        if( motiontime >= 0 and motiontime < 1*(1/dt)):
-            # Extract qInit values using dictionary keys
-            qInit = [state.motorState[d[key]].q for key in d]
-            prev_joint_angles = qInit
-            #print(qInit)
-
-        # second, move to the origin point of a sine movement with Kp Kd
-        elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
-            rate_count += 1
-            rate = rate_count / (5*(1/dt))
-
-            # Here I don't switch the legs because the default joint angles are simmetric
-            #qDes = [jointLinearInterpolation(qInit[i], default_joint_angles[i], rate) for i in range(12)]
-            qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
+        self.threshold = config['settings']['tests']['threshold_vf']
         
-        elif( motiontime >= 7*(1/dt)):
-            if change_gains:
-                change_gains = False
-                Kp = np.copy(kp_nominal)
-                Kd = np.copy(kd_nominal)
-            if not is_rec[0] and time.time() - start_backup >= 1:
-                is_rec[0] = True
-                backup_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_backup)
-                backup_network.actor_network.running_mean_std.running_var = copy.copy(running_var_backup)
-                backup_network.actor_network.running_mean_std.count = copy.copy(count_backup)
-                backup_network.decimation_counter = 0
-                backup_network.prev_actions = np.zeros(12)
-                backup_network.qDes = backup_network.q_def
-                Kp = np.copy(kp_nominal)
-                Kd = np.copy(kd_nominal)
 
-            inference_ready.set()
+    # Function to load value function
+    def load_value(self, file_path):
+        with open(file_path, 'rb') as f:
+            return pickle.load(f)
+        
+    def setup_value_function(self):
+        # Setup per la critic network
+        self.critic_model = CriticNetwork()
+        self.params, self.mean, self.std = self.data_value['model_params'], self.data_value['mean'], self.data_value['std']
 
-            # Get the latest available actions
-            #with lock:  
-            #    current_actions = np.copy(latest_actions)
+        # Creiamo l'oggetto per eseguire la valutazione della critic network
+        self.critic_network = CriticEvaluator(self.critic_model, self.params)
+
+    def isRecSingle(self, data_qpos = None, data_qvel = None, data = None):
+        if data != None:
+            is_rec, V_safe = self.computeValueFncSensor(data = data)
+            if is_rec:
+                self.switch = 0
+            else:
+                self.switch += 1
+            if self.switch  == self.switch_min and not self.estimate_lipschitz:
+                return False, V_safe
+            else:
+                return True, V_safe
+        else:
+            self.data.qpos = data_qpos
+            self.data.qvel = data_qvel
+
+            mujoco.mj_forward(self.model,self.data)
+
+            if self.computeValueFncSensor():
+                self.switch = 0
+            else:
+                self.switch += 1
+            if self.switch  == self.switch_min and not self.estimate_lipschitz:
+                return False
+            else:
+                return True
+
+    def computeValueFncSensor(self, data = None):
+        if data != None:
+            body_quat = data[0]
+            tensor_quat = torch.tensor(body_quat, device=self.device, dtype=torch.double).unsqueeze(0)
+            
+
+            body_ang_vel = data[1]
+
+            # -------------------------------
+            # Legs swap to match network order
+            # -------------------------------
+            joint_pos = swap_legs(data[2])
+            joint_vel = swap_legs(data[3])
+        else:
+            imu_quat = self.data.qpos[3:7].copy()
+            body_quat_reordered = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
+            tensor_quat = torch.tensor(body_quat_reordered, device=self.device, dtype=torch.double).unsqueeze(0)
+
+            body_ang_vel = self.data.qvel[3:6].copy()  
+            # -------------------------------
+            # Legs swap to match network order (see documentation)
+            # -------------------------------
+            joint_pos = swap_legs(self.data.qpos[7:].copy())
+            joint_vel = swap_legs(self.data.qvel[6:].copy())
+
+        gravity_body = quat_rotate_inverse(tensor_quat, self.grav_tens)[0].cpu().numpy()
+
+        obs_flax_np = np.concatenate((
+            gravity_body.astype(np.float32), # 3
+            body_ang_vel, # 3
+            joint_pos.astype(np.float32), # 12
+            joint_vel.astype(np.float32) # 12
+        ))
+
+        obs_flax = jnp.array(obs_flax_np)
+
+        V_safe = self.critic.evaluate(obs_flax)
+
+        #return True, V_safe
+
+        if self.threshold < 1 and self.estimate_lipschitz:
+            self.lipschitz_constant_estimation(V_safe, obs_flax_np)   
+        #if V_safe <0.9:
+        #print(V_safe)
+        #return True
+        if V_safe - self.vf_additional_term > self.threshold:
+            return True, V_safe
+        else:
+            return False, V_safe
+
+    def lipschitz_constant_estimation(self, V_safe, obs_flax_np):
+        if self.prev_vf != None:
+            dif_check = abs(obs_flax_np - self.prev_vf_input)
+            dif_vf_input = np.linalg.norm(obs_flax_np - self.prev_vf_input)
+            dif_vf = np.linalg.norm(V_safe - self.prev_vf)
+            L_estimate = dif_vf / dif_vf_input
+            if self.dif_vf_max == None:
+                self.dif_vf_input_min = dif_vf_input
+                self.dif_vf_input_max = dif_vf_input
+
+                self.dif_vf_min = dif_vf
+                self.dif_vf_max = dif_vf
+                self.L_estimate = np.concatenate(([L_estimate], [dif_vf_input], [dif_vf], [V_safe], obs_flax_np, [self.prev_vf], self.prev_vf_input))
                 
+            else:
+                if dif_vf_input < self.dif_vf_input_min:
+                    self.dif_vf_input_min = dif_vf_input
+                elif dif_vf_input > self.dif_vf_input_max:
+                    self.dif_vf_input_max = dif_vf_input
 
-            #print(current_actions)
-            qDes = np.copy(qDes_computed)
-            
+                if dif_vf < self.dif_vf_min:
+                    self.dif_vf_min = dif_vf
+                elif dif_vf > self.dif_vf_max:
+                    self.dif_vf_max = dif_vf
 
-        # Clip the joint angles to the joint limits
-        for i in range(4):
-            qDes[i*3] = np.clip(qDes[i*3], -1.22, 1.22) # Hip joint
-            qDes[i*3+1] = np.clip(qDes[i*3+1], 0.0, 1.8) # Thigh joint
-            qDes[i*3+2] = np.clip(qDes[i*3+2], -2.78, -0.65) # Calf joint
+                if L_estimate > self.L_estimate[0]:
+                    self.L_estimate = np.concatenate(([L_estimate], [dif_vf_input], [dif_vf], [V_safe], obs_flax_np, [self.prev_vf], self.prev_vf_input))
 
-        if motiontime >= 1*(1/dt):
-            qNew = [state.motorState[d[key]].q for key in d]
-            if np.linalg.norm(np.asarray(prev_joint_angles) - np.asarray(qNew))  > 0.1:
-                print('Large difference')
-                print('prev_joint_angles', prev_joint_angles)
-                print('qNew', qNew)
-                Kp = [0, 0, 0]  # Set Kp to 0 for all joints
-                Kd = [0, 0, 0]  # Set Kd to 0 for all joints
-                exit()
-            prev_joint_angles = qNew
-
-            for leg_idx, leg in enumerate(legs):
-                for joint_idx, joint in enumerate(joints):
-                    key = f"{leg}{joint}"
-                    cmd.motorCmd[d[key]].q = qDes[leg_idx * 3 + joint_idx]
-                    cmd.motorCmd[d[key]].dq = 0
-                    cmd.motorCmd[d[key]].Kp = Kp[joint_idx]
-                    cmd.motorCmd[d[key]].Kd = Kd[joint_idx]
-                    cmd.motorCmd[d[key]].tau = torque_values[joint_idx]
-
-        """ temp = dt - (time.time() - step_start)
-        if temp < 0:
-            print(f"\033[31m{temp:.5f}\033[0m")
+            self.save_L.append(np.concatenate(([self.dif_vf_min], [self.dif_vf_max], [self.dif_vf_input_min], [self.dif_vf_input_max], [dif_vf_input], [dif_vf], [L_estimate], [V_safe], obs_flax_np,[np.argmax(dif_check)],[dif_check[np.argmax(dif_check)]])))
         else:
-            print(f"\033[32m{temp:.5f}\033[0m") """
-           
-        """ Safety checks"""
-        safe.PowerProtect(cmd, state, 7)
-        safe.PositionLimit(cmd)
-
-        if motiontime > 5*(1/dt):
-            safe.PositionProtect(cmd, state, 0.087)
-
-        udp.SetSend(cmd)
-        udp.Send()
-
-        # Temporize the loop to maintain the desired frequency
-        time_until_next_step = dt - (time.time() - step_start)
-        if time_until_next_step > 0:
-            time.sleep(time_until_next_step)
-        
-        # elapsed_time = time.time() - step_start  # Time taken for the loop iteration
-        # print(f"Loop took: {elapsed_time:.6f} seconds ({1/elapsed_time:.2f} Hz)")
+            self.save_L.append(np.concatenate(([0], [0], [0], [0], [0], [0], [0], [V_safe], obs_flax_np,[0],[0])))
+        self.prev_vf_input = obs_flax_np
+        self.prev_vf = V_safe

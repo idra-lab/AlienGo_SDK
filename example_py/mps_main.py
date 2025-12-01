@@ -8,13 +8,15 @@ import torch
 sys.path.append('../')
 sys.path.append('../lib/python/amd64')
 import robot_interface as sdk
-import time
 import csv
+import copy
 
 # Neural network and configuration imports
 from config_loader.config_loader import load_config, load_actor_network
 from utils import scale_axis, quat_rotate_inverse, swap_legs, clip_torques_in_groups
 import pygame
+from trot import TrotPolicy
+from mps import MPS
 
 import threading
 
@@ -31,11 +33,43 @@ else:
     print(f"Detected joystick: {joystick.get_name()}")
 
 # Config and neural network setup
-config_path = "../config.yaml"
+config_path = "config_mps.yaml"
 config = load_config(config_path)
-actor_network = load_actor_network(config)
-scaling_factors = config['scaling']
-default_joint_angles = config['robot']['default_joint_angles']
+nominal_name = config['settings']['tests']['nominal_policy']
+backup_name = config['settings']['tests']['backup_policy']
+nominal_network = TrotPolicy(config, nominal_name, 10) # 10 for decimation of 10 keeping timestep_mps =  0.01s and dt =  0.002s
+backup_network = TrotPolicy(config, backup_name, 20) # 20 for decimation of 5 keeping timestep_mps =  0.01s and dt =  0.002s
+kp_backup = np.array(config['robot'][backup_name ]['kp'])
+kd_backup = np.array(config['robot'][backup_name ]['kd'])
+
+kp_nominal = np.array(config['robot'][nominal_name]['kp'])
+kd_nominal = np.array(config['robot'][nominal_name]['kd'])
+# data includes: body quaternion (x,y,z,q), imu gyro, joint positions and orientations
+data = [np.zeros(4), np.zeros(3), np.zeros(12), np.zeros(12)]
+mps = MPS(config, data)
+
+running_mean_nominal = copy.copy(nominal_network.actor_network.running_mean_std.running_mean)
+running_var_nominal = copy.copy(nominal_network.actor_network.running_mean_std.running_var)
+count_nominal = copy.copy(nominal_network.actor_network.running_mean_std.count)
+
+running_mean_backup = copy.copy(backup_network.actor_network.running_mean_std.running_mean)
+running_var_backup = copy.copy(backup_network.actor_network.running_mean_std.running_var)
+count_backup = copy.copy(backup_network.actor_network.running_mean_std.count)
+cmd_backup = config['robot'][backup_name]['cmd_backup']
+backup_network.commands = np.array(cmd_backup)
+start_backup = 0
+
+V_safe_save = []
+
+# Initialize as recoverable
+is_rec = [True]
+
+#scaling_factors = config['scaling']
+#default_joint_angles = config['robot']['default_joint_angles']
+prev_joint_angles = np.zeros(12)
+#save_prev_actions = []
+#save_latest_actions = []
+save_cmd = []
 
 # Low-level command parameters
 TARGET_PORT = 8007
@@ -44,6 +78,18 @@ TARGET_IP = "192.168.123.10"
 
 LOW_CMD_LENGTH = 610
 LOW_STATE_LENGTH = 771
+
+# Shared variables
+lock = threading.Lock()
+latest_actions = np.zeros(12)  # Store the latest actions safely across threads
+previous_actions = np.zeros(12)  # Store the previous actions
+
+qDes_computed = np.zeros(12)  # Store the previous actions
+kp_inference = np.zeros(12)
+kd_inference = np.zeros(12)
+inference_ready = threading.Event()  # Event to signal new inference results
+stop_threads = False  # Flag to stop threads gracefully
+start_time = 0
 
 def get_commands(): 
     """
@@ -72,19 +118,23 @@ def get_commands():
         scaled_axes = [scale_axis(i, axes[i]) for i in range(len(axes))]
         scaled_axes[0], scaled_axes[1] =scaled_axes[1], scaled_axes[0]
         commands = np.array(scaled_axes)
-        print('commands',commands)
+        #commands = np.clip(commands, [-0.3,-0.5,-0.5],[0.3,0.5,0.5])
 
         # Apply the threshold to commands
         threshold = 0.05  # Define the threshold value
         commands = np.array([x if abs(x) >= threshold else 0 for x in scaled_axes])
-
+       # if commands[0] < -0.3:
+       #     commands[0] = -0.3
+       # elif commands[0] > 0.3:
+        #    commands[0] = 0.3
         return commands
     else:
+        print('No joystick')
         exit()
     
 def get_safety_button(): 
     """Function to check if the safety button on the controller is pressed. Y buttoon for corrent joystick"""
-
+    global latest_actions, previous_actions, running_mean_nominal, running_var_nominal, count_nominal, start_backup
     if pygame.joystick.get_count() == 1:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -94,19 +144,11 @@ def get_safety_button():
         if safety_button:
             return True
         
-        safety_button = joystick.get_button(0)
-        if safety_button:
-            print(0)
-            return True
-       
+        
+            
     return False
 
-# Shared variables
-lock = threading.Lock()
-latest_actions = np.zeros(12)  # Store the latest actions safely across threads
-previous_actions = np.zeros(12)  # Store the previous actions
-inference_ready = threading.Event()  # Event to signal new inference results
-stop_threads = False  # Flag to stop threads gracefully
+
 
 def compute_observation(state, scaling_factors):
     """
@@ -116,6 +158,8 @@ def compute_observation(state, scaling_factors):
     nn order = [FL, FR, RL, RR]
     """
     commands = get_commands() # The stopping condition here is not evaluated
+    #commands = np.array([1.,0,0])
+    #save_cmd.append(commands)
 
     imu = state.imu
     body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
@@ -132,6 +176,7 @@ def compute_observation(state, scaling_factors):
     ).squeeze().numpy()
 
     prev_actions1 = np.copy(previous_actions)
+    #save_prev_actions.append(prev_actions1.copy())
     prev_actions = swap_legs(prev_actions1)
 
     # Scale observations
@@ -146,35 +191,77 @@ def compute_observation(state, scaling_factors):
     # Concatenate into a single observation vector
     return np.concatenate((scaled_body_vel, scaled_commands, scaled_gravity_body, scaled_joint_angles, scaled_joint_velocities, scaled_actions))
 
-def compute_actions(state, scaling_factors):
+def compute_actions(state, is_rec):
     """
     Inference ont he nn to retrive actions from observations.
     Legs are swapped to match the order of the neural network input.
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    global latest_actions, previous_actions, stop_threads
+    global latest_actions, previous_actions, stop_threads, qDes_computed, kp_inference, kd_inference, start_backup, Kd, Kp, motiontime, decimation
     while not stop_threads:
-        start_time = time.time()
+        
         
         inference_ready.wait()  # Wait for signal from the main thread
         inference_ready.clear()
 
-        obs = compute_observation(state, scaling_factors)
+        '''obs = compute_observation(state, scaling_factors)
         obs_tensor = torch.tensor(obs, dtype=torch.float32)
-        obs_normalized = actor_network.norm_obs(obs_tensor)
-
+        if is_rec[0]:
+            obs_normalized = nominal_network.norm_obs(obs_tensor)
+        else:
+            obs_normalized = backup_network.norm_obs(obs_tensor)
         with torch.no_grad():
-            new_actions1 = actor_network(obs_normalized).numpy()
+            if is_rec[0]:
+                new_actions1 = nominal_network(obs_normalized).numpy()
+            else:
+                new_actions1 = backup_network(obs_normalized).numpy()
         
         # Swap the actions to the correct order for SDK
         new_actions = swap_legs(new_actions1)
 
         with lock:
-            previous_actions[:] = latest_actions  # Store current actions as previous
+            
+            save_latest_actions.append(latest_actions.copy())
+            
             latest_actions[:] = new_actions  # Update latest actions
+            previous_actions[:] = latest_actions  # Store current actions as previous'''
+        imu = state.imu
+        joint_angles = [state.motorState[i].q for i in range(12)]
+        joint_velocities = [state.motorState[i].dq for i in range(12)]
+
+        if is_rec[0] and motiontime % decimation == 0:
+            # data includes: body quaternion (x,y,z,q), imu gyro, joint positions and orientations
+            body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
+            body_vel = np.array([imu.gyroscope[0], imu.gyroscope[1], imu.gyroscope[2]])
+            data = [body_quat, body_vel, np.asarray(joint_angles), np.asarray(joint_velocities)]
+            is_rec[0], V_safe = mps.isRecSingle(data=data)
+            V_safe_save.append([V_safe])
+            if not is_rec[0]:
+                nominal_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_nominal)
+                nominal_network.actor_network.running_mean_std.running_var = copy.copy(running_var_nominal)
+                nominal_network.actor_network.running_mean_std.count = copy.copy(count_nominal)
+                nominal_network.decimation_counter = 0
+                nominal_network.prev_actions = np.zeros(12)
+                nominal_network.qDes = nominal_network.q_def
+                start_backup = time.time()
+                Kp = np.copy(kp_backup)
+                Kd = np.copy(kd_backup)
+        
+        with lock:
+            if is_rec[0]:
+                nominal_network.commands = get_commands()
+                qDes_computed[:] = nominal_network.compute_actions(imu.quaternion, imu.gyroscope, joint_angles, joint_velocities)
+            #    kp_inference[:] = np.copy(kp_nominal)
+            #    kd_inference[:] = np.copy(kd_nominal)
+            else:
+                qDes_computed[:] = backup_network.compute_actions(imu.quaternion, imu.gyroscope, joint_angles, joint_velocities)
+            #    kp_inference[:] = np.copy(kp_backup)
+            #    kd_inference[:] = np.copy(kd_backup)
+            
     
         """ print(f"Inference completed in: {time.time() - start_time:.5f} seconds") """
+    
 
 def jointLinearInterpolation(initPos, targetPos, rate):
     """
@@ -196,9 +283,11 @@ def check_safety_stops(state):
     stop_button = get_safety_button()  # Check if the safety button is pressed
 
     if pygame.joystick.get_count() != 1:
+        print('pygame.joystick.get_count() != 1')
         return True
 
     if inclination > np.pi/8 or stop_button:
+        print('inclination', inclination, 'stop_button', stop_button)
         return True
     else:
         return False
@@ -214,6 +303,7 @@ if __name__ == '__main__':
     legs = ['FR', 'FL', 'RR', 'RL']
     joints = ['_0', '_1', '_2']
     torque_values = [-1.6, 0.0, 0.0]
+    #torque_values = [-.65, 0.0, 0.0]
 
     PosStopF  = math.pow(10,9)
     VelStopF  = 16000.0
@@ -238,15 +328,10 @@ if __name__ == '__main__':
     Kp = [100, 100, 100]
     Kd = [3, 3, 3]
 
-    Kp = [0, 0, 0]  # Set Kp to 0 for all joints
-    Kd = [0, 0, 0] 
-    torque_values = [0.0, 0.0, 0.0]
-    save_joints = []
+    #Kp = [0, 0, 0]  # Set Kp to 0 for all joints
+    #Kd = [0, 0, 0] 
 
     actions = torch.zeros(12, dtype=torch.float32)
-
-    # Decimation factor to reduce the policy update frequency - Number of control action updates @ sim DT per policy DT
-    decimation = 4
 
     # Initialize the UDP connection
     udp = sdk.UDP(LOCAL_PORT, TARGET_IP, TARGET_PORT, LOW_CMD_LENGTH, LOW_STATE_LENGTH, -1)
@@ -258,12 +343,13 @@ if __name__ == '__main__':
     cmd.levelFlag = LOWLEVEL
 
     motiontime = 0
+    decimation = 10
 
-    disable_torques = False  # Flag to disable torques if inclination exceeds threshold or safety button is pressed
-
+    disable_torques = False  # ~Flag to disable torques if inclination exceeds threshold or safety button is pressed
+    change_gains = True
+    #exit()
     # Start the inference thread
-    threading.Thread(target=compute_actions, args=(state, scaling_factors), daemon=True).start()
-
+    threading.Thread(target=compute_actions, args=(state, is_rec), daemon=True).start()
     while True:
         """
         Keeping the dt = 0.002, we need a decimation = 10 to keep the policy update frequency to 50Hz
@@ -275,37 +361,57 @@ if __name__ == '__main__':
     
         udp.Recv()
         udp.GetRecv(state)
-        get_commands()
 
+        '''manual_switch = joystick.get_button(0)
+        if manual_switch:
+            is_rec[0] = False
+            nominal_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_nominal)
+            nominal_network.actor_network.running_mean_std.running_var = copy.copy(running_var_nominal)
+            nominal_network.actor_network.running_mean_std.count = copy.copy(count_nominal)
+            nominal_network.decimation_counter = 0
+            nominal_network.prev_actions = np.zeros(12)
+            nominal_network.qDes = nominal_network.q_def
+            start_backup = time.time()
+            Kp = np.copy(kp_backup)
+            Kd = np.copy(kd_backup)'''
         # Check base inclination and modify Kp, Kd if needed - to disable control torques
         if check_safety_stops(state):  # Using qpos to check inclination
             print("Safety condition triggered, disabling control gains")
             # Set Kp, Kd to 0 (disable control) for safety
             Kp = [0, 0, 0]  # Set Kp to 0 for all joints
             Kd = [0, 0, 0]  # Set Kd to 0 for all joints
-            time_file = time.localtime()
-            '''nameFile = "joint_data" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            '''time_file = time.localtime()
+            nameFile = "cmd" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
             with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
                 wr = csv.writer(myfile)
-                wr.writerows(save_joints)
+                wr.writerows(save_cmd)
             myfile.close()'''
+
+            '''time_file = time.localtime()
+            nameFile = "prev_actions" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(save_prev_actions)
+            myfile.close()
+            nameFile = "latest_actions" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(save_latest_actions)
+            myfile.close()'''
+            time_file = time.localtime()
+            nameFile = "vf" + str(time_file.tm_mday) + "_" + str(time_file.tm_mon) + "_" + str(time_file.tm_hour) + "_" + str(time_file.tm_min) +".csv"
+            with open(nameFile, 'a', encoding="ISO-8859-1", newline='') as myfile:
+                wr = csv.writer(myfile)
+                wr.writerows(V_safe_save)
+            myfile.close()
             exit()
 
         # First, record initial position
-        if( motiontime >= 0):# and motiontime < 1*(1/dt)):
+        if( motiontime >= 0 and motiontime < 1*(1/dt)):
             # Extract qInit values using dictionary keys
             qInit = [state.motorState[d[key]].q for key in d]
-            save_joints.append(qInit)
-            
-            
-            imu = state.imu
-            body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
-            body_vel = np.array([imu.gyroscope[0], imu.gyroscope[1], imu.gyroscope[2]])
-
-            print(qInit)
-            print('body_quat',body_quat)
-            print('body_vel',body_vel)
-            print(qInit[7:9], '\n',qInit[10:12], '\n')
+            prev_joint_angles = qInit
+            #print(qInit)
 
         # second, move to the origin point of a sine movement with Kp Kd
         elif( motiontime >= 1*(1/dt) and motiontime < 7*(1/dt)):
@@ -317,17 +423,31 @@ if __name__ == '__main__':
             qDes = [jointLinearInterpolation(qInit[i], sin_mid_q[i], rate) for i in range(12)]
         
         elif( motiontime >= 7*(1/dt)):
+            if change_gains:
+                change_gains = False
+                Kp = np.copy(kp_nominal)
+                Kd = np.copy(kd_nominal)
+            if not is_rec[0] and time.time() - start_backup >= 1:
+                is_rec[0] = True
+                backup_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_backup)
+                backup_network.actor_network.running_mean_std.running_var = copy.copy(running_var_backup)
+                backup_network.actor_network.running_mean_std.count = copy.copy(count_backup)
+                backup_network.decimation_counter = 0
+                backup_network.prev_actions = np.zeros(12)
+                backup_network.qDes = backup_network.q_def
+                Kp = np.copy(kp_nominal)
+                Kd = np.copy(kd_nominal)
 
-            # Trigger inference every `decimation` steps
-            if motiontime % decimation == 0:
-                inference_ready.set()
+            inference_ready.set()
 
             # Get the latest available actions
-            with lock:  
-                current_actions = np.copy(latest_actions)
+            #with lock:  
+            #    current_actions = np.copy(latest_actions)
+                
 
             #print(current_actions)
-            qDes = 0.5 * current_actions + np.array(default_joint_angles)
+            qDes = np.copy(qDes_computed)
+            
 
         # Clip the joint angles to the joint limits
         for i in range(4):
@@ -336,6 +456,16 @@ if __name__ == '__main__':
             qDes[i*3+2] = np.clip(qDes[i*3+2], -2.78, -0.65) # Calf joint
 
         if motiontime >= 1*(1/dt):
+            qNew = [state.motorState[d[key]].q for key in d]
+            if np.linalg.norm(np.asarray(prev_joint_angles) - np.asarray(qNew))  > 0.1:
+                print('Large difference')
+                print('prev_joint_angles', prev_joint_angles)
+                print('qNew', qNew)
+                Kp = [0, 0, 0]  # Set Kp to 0 for all joints
+                Kd = [0, 0, 0]  # Set Kd to 0 for all joints
+                exit()
+            prev_joint_angles = qNew
+
             for leg_idx, leg in enumerate(legs):
                 for joint_idx, joint in enumerate(joints):
                     key = f"{leg}{joint}"
@@ -355,8 +485,8 @@ if __name__ == '__main__':
         safe.PowerProtect(cmd, state, 7)
         safe.PositionLimit(cmd)
 
-      #  if motiontime > 5*(1/dt):
-      #      safe.PositionProtect(cmd, state, 0.087)
+        if motiontime > 5*(1/dt):
+            safe.PositionProtect(cmd, state, 0.087)
 
         udp.SetSend(cmd)
         udp.Send()
