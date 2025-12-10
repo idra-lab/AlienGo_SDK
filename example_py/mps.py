@@ -85,10 +85,11 @@ class MPS:
         self.prev_vf = None
         self.prev_vf_input = None
         self.save_L = []
+        self.nominal = True
 
         self.threshold = 10
         self.switch = 0
-        self.switch_min = 2
+        self.switch_min = config['settings']['tests']['switch_min']
         self.vf_additional_term = config['settings']['tests']['additional_term_vf']
         self.critic = FlaxCritic(config['networks']['paths']['vf_sensors_in_place'])
         if data != None:
@@ -116,16 +117,30 @@ class MPS:
         self.critic_network = CriticEvaluator(self.critic_model, self.params)
 
     def isRecSingle(self, data_qpos = None, data_qvel = None, data = None):
-        if data != None:
-            is_rec, V_safe = self.computeValueFncSensor(data = data)
+        if data != None and self.nominal:
+            is_rec, V_safe = self.computeValueFncSensor(data)
             if is_rec:
                 self.switch = 0
             else:
                 self.switch += 1
             if self.switch  == self.switch_min and not self.estimate_lipschitz:
+                self.switch = 0
+                self.nominal = False
                 return False, V_safe
             else:
                 return True, V_safe
+        elif data != None and not self.nominal:
+            is_rec, V_safe = self.computeValueFncSensor(data)
+            if is_rec:
+                self.switch += 1
+            else:
+                self.switch = 0
+            if self.switch  == 20 and not self.estimate_lipschitz:
+                self.switch = 0
+                self.nominal = True
+                return True, V_safe
+            else:
+                return False, V_safe
         else:
             self.data.qpos = data_qpos
             self.data.qvel = data_qvel

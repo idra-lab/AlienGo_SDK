@@ -77,7 +77,7 @@ def get_commands():
         # Apply the threshold to commands
         threshold = 0.05  # Define the threshold value
         commands = np.array([x if abs(x) >= threshold else 0 for x in scaled_axes])
-
+        print('commands',commands)
         return commands
     else:
         exit()
@@ -301,10 +301,15 @@ if __name__ == '__main__':
             imu = state.imu
             body_quat = np.array([imu.quaternion[1], imu.quaternion[2], imu.quaternion[3], imu.quaternion[0]])
             body_vel = np.array([imu.gyroscope[0], imu.gyroscope[1], imu.gyroscope[2]])
+            gravity_body = quat_rotate_inverse(
+                torch.tensor(body_quat, device='cpu', dtype=torch.double).unsqueeze(0),
+                torch.tensor([[0.0, 0.0, -1.0]], device='cpu', dtype=torch.double)
+            )
 
             print(qInit)
             print('body_quat',body_quat)
             print('body_vel',body_vel)
+            print('gravity_body', gravity_body)
             print(qInit[7:9], '\n',qInit[10:12], '\n')
 
         # second, move to the origin point of a sine movement with Kp Kd
@@ -339,11 +344,11 @@ if __name__ == '__main__':
             for leg_idx, leg in enumerate(legs):
                 for joint_idx, joint in enumerate(joints):
                     key = f"{leg}{joint}"
-                    cmd.motorCmd[d[key]].q = qDes[leg_idx * 3 + joint_idx]
+                    cmd.motorCmd[d[key]].q = 0#qDes[leg_idx * 3 + joint_idx]
                     cmd.motorCmd[d[key]].dq = 0
-                    cmd.motorCmd[d[key]].Kp = Kp[joint_idx]
-                    cmd.motorCmd[d[key]].Kd = Kd[joint_idx]
-                    cmd.motorCmd[d[key]].tau = torque_values[joint_idx]
+                    cmd.motorCmd[d[key]].Kp = 0#Kp[joint_idx]
+                    cmd.motorCmd[d[key]].Kd = 0#Kd[joint_idx]
+                    cmd.motorCmd[d[key]].tau = 0#torque_values[joint_idx]
 
         """ temp = dt - (time.time() - step_start)
         if temp < 0:

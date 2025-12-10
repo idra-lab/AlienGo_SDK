@@ -191,7 +191,7 @@ void Custom::RobotControl()
         cmd.motorCmd[FL_0].dq = 0;
         cmd.motorCmd[FL_0].Kp = Kp[0];
         cmd.motorCmd[FL_0].Kd = Kd[0];
-        cmd.motorCmd[FL_0].tau = -1.6f;
+        cmd.motorCmd[FL_0].tau = 1.6f;
 
         cmd.motorCmd[FL_1].q = qDes[4];
         cmd.motorCmd[FL_1].dq = 0;
@@ -231,7 +231,7 @@ void Custom::RobotControl()
         cmd.motorCmd[RL_0].dq = 0;
         cmd.motorCmd[RL_0].Kp = Kp[0];
         cmd.motorCmd[RL_0].Kd = Kd[0];
-        cmd.motorCmd[RL_0].tau = -1.6f;
+        cmd.motorCmd[RL_0].tau = 1.6f;
 
         cmd.motorCmd[RL_1].q = qDes[10];
         cmd.motorCmd[RL_1].dq = 0;
