@@ -42,26 +42,31 @@ backup_use_stop = config['settings']['tests']['backup']['stop']
 # 25 for decimation of 4 keeping timestep_mps =  0.01s and dt =  0.005s
 # 25 for decimation of 4 keeping timestep_mps =  0.01s and dt =  0.005s
 nominal_network = TrotPolicy(config, nominal_name, 25) # 10 for decimation of 10 keeping timestep_mps =  0.01s and dt =  0.002s
-backup_network = TrotPolicy(config, backup_name) # 20 for decimation of 5 keeping timestep_mps =  0.01s and dt =  0.002s
-kp_backup = np.array(config['robot'][backup_name ]['kp'])
-kd_backup = np.array(config['robot'][backup_name ]['kd'])
+
 
 kp_nominal = np.array(config['robot'][nominal_name]['kp'])
 kd_nominal = np.array(config['robot'][nominal_name]['kd'])
-# data includes: body quaternion (x,y,z,q), imu gyro, joint positions and orientations
-data = [np.zeros(4), np.zeros(3), np.zeros(12), np.zeros(12)]
-mps = MPS(config, data)
-backup_nn = Backup(config)
-
 running_mean_nominal = copy.copy(nominal_network.actor_network.running_mean_std.running_mean)
 running_var_nominal = copy.copy(nominal_network.actor_network.running_mean_std.running_var)
 count_nominal = copy.copy(nominal_network.actor_network.running_mean_std.count)
 
-running_mean_backup = copy.copy(backup_network.actor_network.running_mean_std.running_mean)
-running_var_backup = copy.copy(backup_network.actor_network.running_mean_std.running_var)
-count_backup = copy.copy(backup_network.actor_network.running_mean_std.count)
-cmd_backup = config['robot'][backup_name]['cmd_backup']
-backup_network.commands = np.array(cmd_backup)
+# data includes: body quaternion (x,y,z,q), imu gyro, joint positions and orientations
+data = [np.zeros(4), np.zeros(3), np.zeros(12), np.zeros(12)]
+mps = MPS(config, data)
+
+if backup_use_stop:
+    backup_nn = Backup(config)
+    kp_backup = np.array(config['stop']['robot']['kp'])
+    kd_backup = np.array(config['stop']['robot']['kd'])
+else:
+    backup_network = TrotPolicy(config, backup_name) # 20 for decimation of 5 keeping timestep_mps =  0.01s and dt =  0.002s
+    kp_backup = np.array(config['robot'][backup_name ]['kp'])
+    kd_backup = np.array(config['robot'][backup_name ]['kd'])
+    running_mean_backup = copy.copy(backup_network.actor_network.running_mean_std.running_mean)
+    running_var_backup = copy.copy(backup_network.actor_network.running_mean_std.running_var)
+    count_backup = copy.copy(backup_network.actor_network.running_mean_std.count)
+    cmd_backup = config['robot'][backup_name]['cmd_backup']
+    backup_network.commands = np.array(cmd_backup)
 
 use_mps = config['settings']['tests']['use_mps']
 
@@ -208,7 +213,7 @@ def compute_actions(state, is_rec):
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    global latest_actions, previous_actions, stop_threads, qDes_computed, kp_inference, kd_inference, Kd, Kp, motiontime, decimation, dt, i_backup, last_action_stop
+    global latest_actions, previous_actions, stop_threads, qDes_computed, kp_inference, kd_inference, Kd, Kp, motiontime, decimation, dt, i_backup, last_action_stop, backup_use_stop
     while not stop_threads:
         
         
@@ -257,8 +262,8 @@ def compute_actions(state, is_rec):
                 nominal_network.prev_actions = np.zeros(12)
                 nominal_network.qDes = nominal_network.q_def
                 
-                Kp = [25]*12#np.copy(kp_backup)
-                Kd = [0.5]*12#np.copy(kd_backup)
+                Kp = np.copy(kp_backup)
+                Kd = np.copy(kd_backup)
             
         with lock:
             if is_rec[0]:
@@ -267,10 +272,12 @@ def compute_actions(state, is_rec):
             #    kp_inference[:] = np.copy(kp_nominal)
             #    kd_inference[:] = np.copy(kd_nominal)
             else:
-                if i_backup%10 == 0:
-                    qDes_computed[:], last_action_stop = backup_nn.computeBackup(joint_angles, joint_velocities, imu.gyroscope, last_action_stop)
+                if i_backup%4 == 0 and backup_use_stop:
+                    qDes_computed[:], last_action_stop[:] = backup_nn.computeBackup(joint_angles, joint_velocities, imu.gyroscope, last_action_stop)
+                elif not backup_use_stop:
+                    qDes_computed[:] = backup_network.compute_actions(imu.quaternion, imu.gyroscope, joint_angles, joint_velocities)
                 i_backup += 1
-                #qDes_computed[:] = backup_network.compute_actions(imu.quaternion, imu.gyroscope, joint_angles, joint_velocities)
+                #
 
                 
             #    kp_inference[:] = np.copy(kp_backup)
@@ -457,13 +464,15 @@ if __name__ == '__main__':
             if is_rec[0] and i_backup >= 0:#N_backup:
                 i_backup = 0
                 #is_rec[0] = True
-                backup_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_backup)
-                backup_network.actor_network.running_mean_std.running_var = copy.copy(running_var_backup)
-                backup_network.actor_network.running_mean_std.count = copy.copy(count_backup)
-                backup_network.decimation_counter = 0
-                backup_network.prev_actions = np.zeros(12)
-                backup_network.qDes = backup_network.q_def
-                last_action_stop = np.zeros(12)
+                if not backup_use_stop:
+                    backup_network.actor_network.running_mean_std.running_mean = copy.copy(running_mean_backup)
+                    backup_network.actor_network.running_mean_std.running_var = copy.copy(running_var_backup)
+                    backup_network.actor_network.running_mean_std.count = copy.copy(count_backup)
+                    backup_network.decimation_counter = 0
+                    backup_network.prev_actions = np.zeros(12)
+                    backup_network.qDes = backup_network.q_def
+                else:
+                    last_action_stop[:] = np.zeros(12)
                 Kp = np.copy(kp_nominal)
                 Kd = np.copy(kd_nominal)
 

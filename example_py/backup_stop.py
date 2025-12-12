@@ -11,19 +11,27 @@ class Backup(nn.Module):
         
         # Data to preprocess state before sending it to the network
         self.device = config['networks']['device']
-        self.mean = torch.tensor(config['stop']['scaling']['running_mean'], device=torch.device(self.device), dtype=torch.float64)
+        
         self.threshold = float(config['stop']['scaling']['clip_threshold'])
         self.joint_def = torch.tensor(config['stop']['scaling']['default_joint_angles'], device=torch.device(self.device), dtype=torch.float64)
         self.scaling_factor = float(config['stop']['scaling']['factor'])
         epsilon = float(config['stop']['scaling']['epsilon'])
-        running_variance = torch.tensor(config['stop']['scaling']['running_variance'], device=torch.device(self.device), dtype=torch.float64)
-        self.scale = torch.sqrt(running_variance.float()) + epsilon
+        
+        
 
         # Change directory keys
         PATH = config['networks']['paths']['stop']
         old_keys = config['stop']['dictionary']['old_keys']
         new_keys = config['stop']['dictionary']['new_keys']
-        dict_policy = torch.load(PATH, map_location=torch.device(self.device), weights_only=True)['policy']
+        if '2' in PATH:
+            self.mean = torch.tensor(config['stop']['scaling']['running_mean2'], device=torch.device(self.device), dtype=torch.float64)
+            running_variance = torch.tensor(config['stop']['scaling']['running_variance2'], device=torch.device(self.device), dtype=torch.float64)
+            dict_policy = torch.load(PATH, map_location=torch.device(self.device), weights_only=True)
+        else:
+            self.mean = torch.tensor(config['stop']['scaling']['running_mean'], device=torch.device(self.device), dtype=torch.float64)
+            running_variance = torch.tensor(config['stop']['scaling']['running_variance'], device=torch.device(self.device), dtype=torch.float64)
+            dict_policy = torch.load(PATH, map_location=torch.device(self.device), weights_only=True)['policy']
+        self.scale = torch.sqrt(running_variance.float()) + epsilon
         policy_dict = self.labels_policy_dict(dict_policy, old_keys, new_keys)
         #self.load_state_dict(policy_dict)
 
