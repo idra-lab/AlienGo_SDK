@@ -6,8 +6,8 @@ import flax.linen as nn_flax
 from jax import numpy as jnp
 from functools import partial
 import pickle
-import os
 from AlienGo_SDK.example_py.MPS_robot_sensors.utils import *
+import os
 
 
 ## Value function network
@@ -73,7 +73,7 @@ class FlaxCritic:
 
 
 class MPS:
-    def __init__(self, config, data):
+    def __init__(self, config, data=None):
 
         # Parameters from config file
         self.estimate_lipschitz = config['settings']['tests']['estimate_lipschitz']
@@ -95,10 +95,14 @@ class MPS:
         self.switch = 0
         self.switch_min = 2
         self.vf_additional_term = config['settings']['tests']['additional_term_vf']
+        self.critic = FlaxCritic(config['networks']['paths']['vf_sensors_in_place'])
+        if data != None:
+            self.computeValueFncSensor(data)
+        else:
+            self.model, self.data = modelMuJoCo(config['settings']['paths'])
+            # self.vf_additional_term = 0.018
 
-        # self.vf_additional_term = 0.018
-        self.critic = FlaxCritic(os.environ["LOCOSIM_DIR"] + '/robot_control/AlienGo_SDK/example_py/' + config['networks']['paths']['vf_sensors_in_place'])
-        self.computeValueFncSensor(data)
+            self.computeValueFncSensor()
 
         self.threshold = config['settings']['tests']['threshold_vf']
 
@@ -116,29 +120,56 @@ class MPS:
         # Creiamo l'oggetto per eseguire la valutazione della critic network
         self.critic_network = CriticEvaluator(self.critic_model, self.params)
 
-    def isRecSingle(self, sensor):
-        if self.computeValueFncSensor(sensor):
-            self.switch = 0
+    def isRecSingle(self, data_qpos=None, data_qvel=None, data=None):
+        if data != None:
+            if self.computeValueFncSensor():
+                self.switch = 0
+            else:
+                self.switch += 1
+            if self.switch == self.switch_min and not self.estimate_lipschitz:
+                return False
+            else:
+                return True
         else:
-            self.switch += 1
-        #print('self.switch',self.switch)
-        if self.switch == self.switch_min and not self.estimate_lipschitz:
-            return False
-        else:
-            return True
+            self.data.qpos = data_qpos
+            self.data.qvel = data_qvel
 
-    def computeValueFncSensor(self, data):
-        body_quat = data.imu_quat
-        tensor_quat = torch.tensor(body_quat, device=self.device, dtype=torch.double).unsqueeze(0)
+            mujoco.mj_forward(self.model, self.data)
+
+            if self.computeValueFncSensor():
+                self.switch = 0
+            else:
+                self.switch += 1
+            if self.switch == self.switch_min and not self.estimate_lipschitz:
+                return False
+            else:
+                return True
+
+    def computeValueFncSensor(self, data=None):
+        if data != None:
+            body_quat = data.imu_quat
+            tensor_quat = torch.tensor(body_quat, device=self.device, dtype=torch.double).unsqueeze(0)
+
+            body_ang_vel = data.imu_gyro
+
+            # -------------------------------
+            # Legs swap to match network order
+            # -------------------------------
+            joint_pos = swap_legs(data.joint_pos)
+            joint_vel = swap_legs(data.joint_vel)
+        else:
+            imu_quat = self.data.qpos[3:7].copy()
+            body_quat_reordered = np.array([imu_quat[1], imu_quat[2], imu_quat[3], imu_quat[0]])
+            tensor_quat = torch.tensor(body_quat_reordered, device=self.device, dtype=torch.double).unsqueeze(0)
+
+            body_ang_vel = self.data.qvel[3:6].copy()
+            # -------------------------------
+            # Legs swap to match network order (see documentation)
+            # -------------------------------
+            joint_pos = swap_legs(self.data.qpos[7:].copy())
+            joint_vel = swap_legs(self.data.qvel[6:].copy())
+
         gravity_body = quat_rotate_inverse(tensor_quat, self.grav_tens)[0].cpu().numpy()
-
-        body_ang_vel = data.imu_gyro
-
-        # -------------------------------
-        # Legs swap to match network order
-        # -------------------------------
-        joint_pos = swap_legs(data.joint_pos)
-        joint_vel = swap_legs(data.joint_vel)
 
         obs_flax_np = np.concatenate((
             gravity_body.astype(np.float32),  # 3
@@ -153,7 +184,9 @@ class MPS:
 
         if self.threshold < 1 and self.estimate_lipschitz:
             self.lipschitz_constant_estimation(V_safe, obs_flax_np)
-
+            # if V_safe <0.9:
+        # print(V_safe)
+        # return True
         if V_safe - self.vf_additional_term > self.threshold:
             return True
         else:

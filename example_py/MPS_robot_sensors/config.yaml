@@ -1,6 +1,6 @@
 settings:
   paths:
-    results_folder: ../oct_20/Results_No_MPS_
+    results_folder: ../nov_17/p6Results_No_MPS_
     force_directions: ../sphere_points_100.csv
     force_iterations: ../aplication_iteration.csv
     robot_models: ../../aliengo_models
@@ -13,52 +13,74 @@ settings:
     estimate_lipschitz:
       stop: /Stop_VF_data/data_vf_sensors_stop
       in_place:
-        sensors: /InPlace_VF_data/data_vf_sensors_in_place
+        sensors: /InPlace_VF_data_ALL/data_vf_sensors_in_place
         state: /MuJoCo_VF_data/data_vf_mujoco
   tests:
+    locosim: True
     last_test: 0
     torch_num_threads: 1
     torch_num_interop_threads: 1
     stop_force: 20
     threshold_vf: 0.9
     additional_term_vf: 0.018
-    trot_backup: 2
-    test_code: False
-    visualize: False
+    test_code: True
+    visualize: True
     use_mps: False
     manual_mps: False
     estimate_lipschitz: False
+    all_tests: True
     vf_always: False
     save_data: True
     save_iterations: False
-    force_mag: [200, 115 ] #, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190, 195]
+    nominal_policy: P6
+    backup_policy: P1
+    force_mag: [115, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200]
     backup:
       stop: False
       in_place:
         sensors: True
         state: False
-    
+
 simulation:
   timestep_simulation: 0.002
+  timestep_mps: 0.01
   duration: 7
   framerate: 60
 
 robot:
-  backup:
+  P1:
     default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
-    kp: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
-    kd: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
-  nominal:
-    default_joint_angles: [0.0, 0.9, -1.8, 0.0, 0.9, -1.8, 0.0, 0.9, -1.8, 0.0, 0.9, -1.8]
-    kp: [21.5, 21.5, 21.5, 21.5, 21.5, 21.5, 21.5, 21.5, 21.5, 21.5, 21.5, 21.5]
-    kd: [3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5, 3.5]
+    kp: [100., 100., 100., 100., 100., 100., 100., 100., 100., 100., 100., 100.]
+    kd: [3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3.]
+    cmd: [-0.45, 0, 0]
+  P4:
+    default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
+    kp: [35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35.]
+    kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+
+  P5:
+    default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
+    kp: [35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35.]
+    kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+    cmd: [0.5, 0.2, 0.0]
+  P6:
+    default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
+    kp: [35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35.]
+    kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+    cmd: [0.5, 0.0, 0.0]
+
+  P7:
+    default_joint_angles: [0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7, 0.0, 0.9, -1.7]
+    kp: [35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35., 35.]
+    kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+    cmd: [0.5, 0.0, 0.0]
 
 env_nominal:
   action_scale: 0.5
   decimation: 5
   dt: 0.002
   desired_clip_actions: 3.0
-  order: [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
+  order: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
 
 actions:
   bounds:
@@ -66,7 +88,43 @@ actions:
     high: 35.0
     special_high: 45.0
 
-scaling_backup:
+scaling_P4:
+  body_ang_vel: 0.25
+  commands: 2.0
+  gravity_body: 1.0
+  joint_angles: 1.0
+  joint_velocities: 0.05
+  actions: 1.0
+  q_des: 0.3 #0.5
+
+scaling_P5:
+  body_ang_vel: 0.25
+  commands: 2.0
+  gravity_body: 1.0
+  joint_angles: 1.0
+  joint_velocities: 0.05
+  actions: 1.0
+  q_des: 0.5
+
+scaling_P6:
+  body_ang_vel: 0.25
+  commands: 2.0
+  gravity_body: 1.0
+  joint_angles: 1.0
+  joint_velocities: 0.05
+  actions: 1.0
+  q_des: 0.5
+
+scaling_P7:
+  body_ang_vel: 0.25
+  commands: 2.0
+  gravity_body: 1.0
+  joint_angles: 1.0
+  joint_velocities: 0.05
+  actions: 1.0
+  q_des: 0.5
+
+scaling_P1:
   body_ang_vel: 0.25
   commands: 2.0
   gravity_body: 1.0
@@ -77,14 +135,21 @@ scaling_backup:
 
 networks:
   paths:
-    trot_backup1: nn/trot_backup1.pth
-    trot_backup2: nn/trot_backup2.pth
-    stop: stop.pt
-    nominal: aliengo.pt
-    state_estimator: cuncurrent_state_estimator.pth
+    trot1: nn/trot1.pth
+    trot2: nn/trot2.pth
+    trot3: nn/trot3.pth
+    trot4: nn/trot4.pth
+    trot5: nn/trot5.pth
+    trot6: nn/trot6.pth
+    trot7: nn/trot7.pth
+    stop: nn/stop.pt
+    nominal: nn/aliengo.pt
+    state_estimator: nn/cuncurrent_state_estimator.pth
     vf_state_in_place: vf/VF_state_in_place.pkl
-    vf_sensors_in_place: nn/VF_IIT3.pkl
+    vf_sensors_in_place: vf/VF_IIT3.pkl
     vf_sensors_stop: vf/VF_sensors_stop.pkl
+    R1:
+    P3:
   device: cpu
 
 stop:
@@ -124,14 +189,6 @@ stop:
 
   dictionary:
     old_keys: [net.0.weight, net.0.bias,      net.2.weight,      net.2.bias,
-               net.4.weight, net.4.bias, mean_layer.weight, mean_layer.bias] 
+               net.4.weight, net.4.bias, mean_layer.weight, mean_layer.bias]
     new_keys: [layers.0.weight, layers.0.bias, layers.2.weight, layers.2.bias,
                layers.4.weight, layers.4.bias, layers.6.weight, layers.6.bias]
-
-controller:
-  topics:
-    imu: /aliengo/trunk_imu
-    joint_states: /aliengo/joint_states
-    odometry: /aliengo/ground_truth
-    pose: /pronto/pose
-    twist: /pronto/twist
