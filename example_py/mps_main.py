@@ -22,7 +22,7 @@ from backup_stop import Backup
 import threading
 
 # Initialize pygame and the joystick module
-pygame.init()
+'''pygame.init()
 pygame.joystick.init()
 
 # Check if there is at least one joystick (gamepad) connected
@@ -31,7 +31,7 @@ if pygame.joystick.get_count() == 0:
 else:
     joystick = pygame.joystick.Joystick(0)  # Get the first joystick
     joystick.init()
-    print(f"Detected joystick: {joystick.get_name()}")
+    print(f"Detected joystick: {joystick.get_name()}")'''
 
 # Config and neural network setup
 config_path = "config_mps.yaml"
@@ -40,8 +40,7 @@ nominal_name = config['settings']['tests']['nominal_policy']
 backup_name = config['settings']['tests']['backup_policy']
 backup_use_stop = config['settings']['tests']['backup']['stop']
 # 25 for decimation of 4 keeping timestep_mps =  0.01s and dt =  0.005s
-# 25 for decimation of 4 keeping timestep_mps =  0.01s and dt =  0.005s
-nominal_network = TrotPolicy(config, nominal_name, 25) # 10 for decimation of 10 keeping timestep_mps =  0.01s and dt =  0.002s
+nominal_network = TrotPolicy(config, nominal_name, 25) # 25 for decimation of 4 keeping timestep_mps =  0.01s and dt =  0.005s
 
 
 kp_nominal = np.array(config['robot'][nominal_name]['kp'])
@@ -54,12 +53,13 @@ count_nominal = copy.copy(nominal_network.actor_network.running_mean_std.count)
 data = [np.zeros(4), np.zeros(3), np.zeros(12), np.zeros(12)]
 mps = MPS(config, data)
 
+exit()
 if backup_use_stop:
-    backup_nn = Backup(config)
+    backup_nn = Backup(config, 25)
     kp_backup = np.array(config['stop']['robot']['kp'])
     kd_backup = np.array(config['stop']['robot']['kd'])
 else:
-    backup_network = TrotPolicy(config, backup_name) # 20 for decimation of 5 keeping timestep_mps =  0.01s and dt =  0.002s
+    backup_network = TrotPolicy(config, backup_name, 50) # 50 for decimation of 2 keeping timestep_mps =  0.01s and dt =  0.005s
     kp_backup = np.array(config['robot'][backup_name ]['kp'])
     kd_backup = np.array(config['robot'][backup_name ]['kd'])
     running_mean_backup = copy.copy(backup_network.actor_network.running_mean_std.running_mean)
@@ -102,7 +102,6 @@ qDes_computed = np.zeros(12)  # Store the previous actions
 kp_inference = np.zeros(12)
 kd_inference = np.zeros(12)
 inference_ready = threading.Event()  # Event to signal new inference results
-last_action_stop = np.zeros(12)
 stop_threads = False  # Flag to stop threads gracefully
 start_time = 0
 
@@ -213,7 +212,7 @@ def compute_actions(state, is_rec):
     SDK order = [FR, FL, RR, RL]
     nn order = [FL, FR, RL, RR]
     """
-    global latest_actions, previous_actions, stop_threads, qDes_computed, kp_inference, kd_inference, Kd, Kp, motiontime, decimation, dt, i_backup, last_action_stop, backup_use_stop
+    global latest_actions, previous_actions, stop_threads, qDes_computed, kp_inference, kd_inference, Kd, Kp, motiontime, decimation, dt, i_backup, backup_use_stop
     while not stop_threads:
         
         
@@ -272,9 +271,9 @@ def compute_actions(state, is_rec):
             #    kp_inference[:] = np.copy(kp_nominal)
             #    kd_inference[:] = np.copy(kd_nominal)
             else:
-                if i_backup%4 == 0 and backup_use_stop:
-                    qDes_computed[:], last_action_stop[:] = backup_nn.computeBackup(joint_angles, joint_velocities, imu.gyroscope, last_action_stop)
-                elif not backup_use_stop:
+                if backup_use_stop:
+                    qDes_computed[:] = backup_nn.computeBackup(joint_angles, joint_velocities, imu.gyroscope)
+                else:
                     qDes_computed[:] = backup_network.compute_actions(imu.quaternion, imu.gyroscope, joint_angles, joint_velocities)
                 i_backup += 1
                 #
@@ -472,7 +471,9 @@ if __name__ == '__main__':
                     backup_network.prev_actions = np.zeros(12)
                     backup_network.qDes = backup_network.q_def
                 else:
-                    last_action_stop[:] = np.zeros(12)
+                    backup_nn.last_action = np.zeros(12)
+                    backup_nn.decimation_counter = 0
+                    backup_nn.qDes = backup_nn.orderBackup(backup_nn.joint_def)
                 Kp = np.copy(kp_nominal)
                 Kd = np.copy(kd_nominal)
 

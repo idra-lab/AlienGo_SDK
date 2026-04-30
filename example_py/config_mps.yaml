@@ -149,7 +149,7 @@ networks:
     nominal: nn/aliengo.pt
     state_estimator: nn/cuncurrent_state_estimator.pth
     vf_state_in_place: vf/VF_state_in_place.pkl
-    vf_sensors_in_place: ../vf/VF_MPS_estimator_p1_p6_I2.pkl #VF_MPS_estimator_p1_p6_P3.pkl #
+    vf_sensors_in_place: ../vf/VF_safe_MPC.pkl #VF_MPS_estimator_p1_p6_I2.pkl #VF_MPS_estimator_p1_p6_P3.pkl #
     vf_sensors_stop: vf/VF_sensors_stop.pkl
     R1:
     P3:
